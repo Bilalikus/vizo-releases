@@ -1,0 +1,2696 @@
+import 'dart:async';
+import 'dart:ui';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../../core/constants/constants.dart';
+import '../../models/message_model.dart';
+import '../../models/sticker_model.dart';
+import '../../providers/providers.dart';
+import '../../widgets/widgets.dart';
+import '../call/call_screen.dart';
+import 'chat_info_screen.dart';
+
+/// Chat screen between two users.
+class ChatScreen extends ConsumerStatefulWidget {
+  const ChatScreen({
+    super.key,
+    required this.peerId,
+    required this.peerName,
+    this.peerAvatarUrl,
+  });
+
+  final String peerId;
+  final String peerName;
+  final String? peerAvatarUrl;
+
+  @override
+  ConsumerState<ChatScreen> createState() => _ChatScreenState();
+}
+
+class _ChatScreenState extends ConsumerState<ChatScreen>
+    with WidgetsBindingObserver {
+  final _msgCtrl = TextEditingController();
+  final _scrollCtrl = ScrollController();
+  final _db = FirebaseFirestore.instance;
+
+  late final String _chatId;
+  late final String _myUid;
+
+  // ─── Reply / Edit state ─────────────────
+  MessageModel? _replyTo;
+  MessageModel? _editingMsg;
+  Timer? _typingTimer;
+  bool _amTyping = false;
+  bool _showScrollFab = false;
+
+  // ─── Multi-select state ────────────────
+  bool _multiSelectMode = false;
+  final Set<String> _selectedIds = {};
+
+  // ─── Wallpaper ─────────────────────────
+  int _wallpaperIndex = -1;
+
+  // ─── Jitter fix: track last doc count ──
+  int _lastDocCount = 0;
+  bool _initialLoadDone = false;
+
+  // ─── Sticker picker state ──────────────
+  bool _showStickerPicker = false;
+
+  // ─── Chat search state ────────────────
+  bool _showChatSearch = false;
+  String _chatSearchQuery = '';
+  final _chatSearchCtrl = TextEditingController();
+
+  // ─── Voice recording state ─────────────
+  bool _isRecording = false;
+  Timer? _recordTimer;
+  int _recordSeconds = 0;
+  bool _hasText = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _myUid = ref.read(authServiceProvider).effectiveUid;
+    _chatId = _buildChatId(_myUid, widget.peerId);
+    _markRead();
+    _setOnline(true);
+    _msgCtrl.addListener(_onTextChanged);
+    _scrollCtrl.addListener(_onScroll);
+    _loadWallpaper();
+  }
+
+  Future<void> _loadWallpaper() async {
+    final p = await SharedPreferences.getInstance();
+    final idx = p.getInt('pref_wallpaper') ?? -1;
+    if (mounted) setState(() => _wallpaperIndex = idx);
+  }
+
+  void _onScroll() {
+    if (!_scrollCtrl.hasClients) return;
+    final show = _scrollCtrl.position.pixels <
+        _scrollCtrl.position.maxScrollExtent - 300;
+    if (show != _showScrollFab) setState(() => _showScrollFab = show);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _msgCtrl.removeListener(_onTextChanged);
+    _scrollCtrl.removeListener(_onScroll);
+    _msgCtrl.dispose();
+    _scrollCtrl.dispose();
+    _chatSearchCtrl.dispose();
+    _typingTimer?.cancel();
+    _recordTimer?.cancel();
+    _setTyping(false);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _setOnline(state == AppLifecycleState.resumed);
+  }
+
+  // ─── Helpers ────────────────────────────
+
+  String _buildChatId(String a, String b) {
+    final sorted = [a, b]..sort();
+    return '${sorted[0]}_${sorted[1]}';
+  }
+
+  Future<void> _setOnline(bool online) async {
+    try {
+      await _db.collection('users').doc(_myUid).update({
+        'isOnline': online,
+        'lastSeen': FieldValue.serverTimestamp(),
+      });
+    } catch (_) {}
+  }
+
+  void _onTextChanged() {
+    final hasText = _msgCtrl.text.trim().isNotEmpty;
+    if (hasText != _hasText) {
+      setState(() => _hasText = hasText);
+    }
+    if (hasText && !_amTyping) {
+      _setTyping(true);
+    }
+    _typingTimer?.cancel();
+    _typingTimer = Timer(const Duration(seconds: 3), () {
+      _setTyping(false);
+    });
+  }
+
+  Future<void> _setTyping(bool typing) async {
+    if (_amTyping == typing) return;
+    _amTyping = typing;
+    try {
+      await _db.collection('chats').doc(_chatId).set({
+        'typing_$_myUid': typing,
+      }, SetOptions(merge: true));
+    } catch (_) {}
+  }
+
+  Future<void> _markRead() async {
+    final unread = await _db
+        .collection('chats')
+        .doc(_chatId)
+        .collection('messages')
+        .where('senderId', isNotEqualTo: _myUid)
+        .where('isRead', isEqualTo: false)
+        .get();
+    final batch = _db.batch();
+    for (final doc in unread.docs) {
+      batch.update(doc.reference, {'isRead': true});
+    }
+    await batch.commit();
+  }
+
+  // ─── Send / Edit ────────────────────────
+
+  Future<void> _send() async {
+    final text = _msgCtrl.text.trim();
+    if (text.isEmpty) return;
+
+    // Editing existing message
+    if (_editingMsg != null) {
+      await _db
+          .collection('chats')
+          .doc(_chatId)
+          .collection('messages')
+          .doc(_editingMsg!.id)
+          .update({'text': text, 'isEdited': true});
+      _cancelEdit();
+      return;
+    }
+
+    _msgCtrl.clear();
+    _setTyping(false);
+
+    final currentUser = ref.read(currentUserProvider);
+    final senderName = currentUser.displayName.isNotEmpty
+        ? currentUser.displayName
+        : currentUser.phoneNumber;
+
+    await _db.collection('chats').doc(_chatId).set({
+      'participants': [_myUid, widget.peerId],
+      'lastMessage': text,
+      'lastMessageAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    final msgData = <String, dynamic>{
+      'chatId': _chatId,
+      'senderId': _myUid,
+      'senderName': senderName,
+      'text': text,
+      'createdAt': FieldValue.serverTimestamp(),
+      'isRead': false,
+      'isEdited': false,
+      'isDeleted': false,
+    };
+
+    if (_replyTo != null) {
+      msgData['replyToId'] = _replyTo!.id;
+      msgData['replyToText'] = _replyTo!.text;
+      msgData['replyToSender'] = _replyTo!.senderName;
+    }
+
+    await _db
+        .collection('chats')
+        .doc(_chatId)
+        .collection('messages')
+        .add(msgData);
+
+    _cancelReply();
+    _scrollToBottom();
+  }
+
+  // ─── Send Sticker ──────────────────────
+
+  Future<void> _sendSticker(String emoji) async {
+    final currentUser = ref.read(currentUserProvider);
+    final senderName = currentUser.displayName.isNotEmpty
+        ? currentUser.displayName
+        : currentUser.phoneNumber;
+
+    await _db.collection('chats').doc(_chatId).set({
+      'participants': [_myUid, widget.peerId],
+      'lastMessage': emoji,
+      'lastMessageAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    await _db
+        .collection('chats')
+        .doc(_chatId)
+        .collection('messages')
+        .add({
+      'chatId': _chatId,
+      'senderId': _myUid,
+      'senderName': senderName,
+      'text': emoji,
+      'mediaType': 'sticker',
+      'createdAt': FieldValue.serverTimestamp(),
+      'isRead': false,
+      'isEdited': false,
+      'isDeleted': false,
+    });
+
+    setState(() => _showStickerPicker = false);
+    _scrollToBottom();
+  }
+
+  // ─── Attach File ──────────────────────
+
+  Future<void> _attachFile() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        allowMultiple: false,
+        withData: false,
+        withReadStream: false,
+      );
+      if (result == null || result.files.isEmpty) return;
+
+      final file = result.files.first;
+      final fileName = file.name;
+      final fileSize = file.size;
+
+      final currentUser = ref.read(currentUserProvider);
+      final senderName = currentUser.displayName.isNotEmpty
+          ? currentUser.displayName
+          : currentUser.phoneNumber;
+
+      // Format size
+      String sizeStr;
+      if (fileSize < 1024) {
+        sizeStr = '$fileSize B';
+      } else if (fileSize < 1024 * 1024) {
+        sizeStr = '${(fileSize / 1024).toStringAsFixed(1)} KB';
+      } else {
+        sizeStr = '${(fileSize / (1024 * 1024)).toStringAsFixed(1)} MB';
+      }
+
+      await _db.collection('chats').doc(_chatId).set({
+        'participants': [_myUid, widget.peerId],
+        'lastMessage': '📎 $fileName',
+        'lastMessageAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      await _db
+          .collection('chats')
+          .doc(_chatId)
+          .collection('messages')
+          .add({
+        'chatId': _chatId,
+        'senderId': _myUid,
+        'senderName': senderName,
+        'text': '📎 $fileName ($sizeStr)',
+        'mediaType': 'file',
+        'mediaName': fileName,
+        'mediaSize': fileSize,
+        'createdAt': FieldValue.serverTimestamp(),
+        'isRead': false,
+        'isEdited': false,
+        'isDeleted': false,
+      });
+
+      _scrollToBottom();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка: $e')),
+        );
+      }
+    }
+  }
+
+  // ─── Voice recording ──────────────────
+
+  void _startRecording() {
+    setState(() {
+      _isRecording = true;
+      _recordSeconds = 0;
+    });
+    _recordTimer?.cancel();
+    _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() => _recordSeconds++);
+    });
+  }
+
+  Future<void> _stopRecording({bool send = true}) async {
+    _recordTimer?.cancel();
+    _recordTimer = null;
+
+    if (!_isRecording) return;
+    final duration = _recordSeconds;
+    setState(() {
+      _isRecording = false;
+      _recordSeconds = 0;
+    });
+
+    if (!send || duration < 1) return;
+
+    // Send voice message as a special mediaType
+    final currentUser = ref.read(currentUserProvider);
+    final senderName = currentUser.displayName.isNotEmpty
+        ? currentUser.displayName
+        : currentUser.phoneNumber;
+
+    final durStr = '${(duration ~/ 60).toString().padLeft(2, '0')}:${(duration % 60).toString().padLeft(2, '0')}';
+
+    await _db.collection('chats').doc(_chatId).set({
+      'participants': [_myUid, widget.peerId],
+      'lastMessage': '🎤 Голосовое ($durStr)',
+      'lastMessageAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    await _db
+        .collection('chats')
+        .doc(_chatId)
+        .collection('messages')
+        .add({
+      'chatId': _chatId,
+      'senderId': _myUid,
+      'senderName': senderName,
+      'text': '🎤 Голосовое сообщение ($durStr)',
+      'mediaType': 'voice',
+      'mediaName': 'voice_message.m4a',
+      'mediaSize': duration,
+      'createdAt': FieldValue.serverTimestamp(),
+      'isRead': false,
+      'isEdited': false,
+      'isDeleted': false,
+    });
+
+    _scrollToBottom();
+  }
+
+  void _cancelRecording() {
+    _recordTimer?.cancel();
+    _recordTimer = null;
+    setState(() {
+      _isRecording = false;
+      _recordSeconds = 0;
+    });
+  }
+
+  // ─── Voice Call / Video Call from chat ──
+
+  void _startVoiceCall() {
+    final authService = ref.read(authServiceProvider);
+    final currentUser = ref.read(currentUserProvider);
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CallScreen(
+          callerId: authService.effectiveUid,
+          callerName: currentUser.displayName.isNotEmpty
+              ? currentUser.displayName
+              : currentUser.phoneNumber,
+          receiverId: widget.peerId,
+          receiverName: widget.peerName,
+          isVideoCall: false,
+        ),
+      ),
+    );
+  }
+
+  void _startVideoCall() {
+    final authService = ref.read(authServiceProvider);
+    final currentUser = ref.read(currentUserProvider);
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CallScreen(
+          callerId: authService.effectiveUid,
+          callerName: currentUser.displayName.isNotEmpty
+              ? currentUser.displayName
+              : currentUser.phoneNumber,
+          receiverId: widget.peerId,
+          receiverName: widget.peerName,
+          isVideoCall: true,
+        ),
+      ),
+    );
+  }
+
+  // ─── Toggle chat search ───────────────
+
+  void _toggleChatSearch() {
+    setState(() {
+      _showChatSearch = !_showChatSearch;
+      if (!_showChatSearch) {
+        _chatSearchQuery = '';
+        _chatSearchCtrl.clear();
+      }
+    });
+  }
+
+  // ─── Message actions ────────────────────
+
+  void _startReply(MessageModel msg) {
+    setState(() {
+      _replyTo = msg;
+      _editingMsg = null;
+    });
+  }
+
+  void _cancelReply() {
+    if (!mounted) return;
+    setState(() => _replyTo = null);
+  }
+
+  void _startEdit(MessageModel msg) {
+    setState(() {
+      _editingMsg = msg;
+      _replyTo = null;
+      _msgCtrl.text = msg.text;
+      _msgCtrl.selection =
+          TextSelection.collapsed(offset: msg.text.length);
+    });
+  }
+
+  void _cancelEdit() {
+    if (!mounted) return;
+    setState(() {
+      _editingMsg = null;
+      _msgCtrl.clear();
+    });
+  }
+
+  Future<void> _deleteMessage(String msgId) async {
+    await _db
+        .collection('chats')
+        .doc(_chatId)
+        .collection('messages')
+        .doc(msgId)
+        .update({'isDeleted': true, 'text': ''});
+  }
+
+  void _copyText(String text) {
+    Clipboard.setData(ClipboardData(text: text));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('Текст скопирован'),
+        backgroundColor: AppColors.accent.withValues(alpha: 0.9),
+        duration: const Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+    );
+  }
+
+  Future<void> _toggleStar(MessageModel msg) async {
+    await _db
+        .collection('chats')
+        .doc(_chatId)
+        .collection('messages')
+        .doc(msg.id)
+        .update({'isStarred': !msg.isStarred});
+  }
+
+  Future<void> _togglePin(MessageModel msg) async {
+    await _db
+        .collection('chats')
+        .doc(_chatId)
+        .collection('messages')
+        .doc(msg.id)
+        .update({'isPinned': !(msg.isPinned)});
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(msg.isPinned ? 'Откреплено' : 'Закреплено'),
+          backgroundColor: AppColors.accent.withValues(alpha: 0.9),
+          duration: const Duration(seconds: 1),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      );
+    }
+  }
+
+  // ─── Multi-select ───────────────────────
+
+  void _toggleMultiSelect(String msgId) {
+    setState(() {
+      if (_selectedIds.contains(msgId)) {
+        _selectedIds.remove(msgId);
+        if (_selectedIds.isEmpty) _multiSelectMode = false;
+      } else {
+        _selectedIds.add(msgId);
+      }
+    });
+  }
+
+  void _exitMultiSelect() {
+    setState(() {
+      _multiSelectMode = false;
+      _selectedIds.clear();
+    });
+  }
+
+  Future<void> _bulkDelete() async {
+    if (_selectedIds.isEmpty) return;
+    final batch = _db.batch();
+    for (final id in _selectedIds) {
+      batch.update(
+        _db.collection('chats').doc(_chatId).collection('messages').doc(id),
+        {'isDeleted': true, 'text': ''},
+      );
+    }
+    await batch.commit();
+    _exitMultiSelect();
+  }
+
+  // ─── Quick reply picker ─────────────────
+
+  Future<void> _showQuickReplies() async {
+    final uid = _myUid;
+    final snap = await _db
+        .collection('users')
+        .doc(uid)
+        .collection('quick_replies')
+        .get();
+    if (snap.docs.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Нет быстрых ответов — добавьте в настройках'),
+            backgroundColor: AppColors.accent.withValues(alpha: 0.9),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        );
+      }
+      return;
+    }
+    if (!mounted) return;
+    final chosen = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => ClipRRect(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30),
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.08),
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+            ),
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 36, height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text('Быстрые ответы',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600,
+                        color: AppColors.textPrimary)),
+                const SizedBox(height: 12),
+                ...snap.docs.map((d) {
+                  final data = d.data();
+                  return ListTile(
+                    leading: Icon(Icons.flash_on_rounded,
+                        color: AppColors.accent, size: 20),
+                    title: Text(data['label'] ?? '',
+                        style: const TextStyle(
+                            color: AppColors.textPrimary, fontSize: 14)),
+                    subtitle: Text(data['text'] ?? '',
+                        style: TextStyle(
+                            color: AppColors.textSecondary.withValues(alpha: 0.6),
+                            fontSize: 12)),
+                    onTap: () => Navigator.pop(context, data['text'] as String?),
+                  );
+                }),
+                SizedBox(height: MediaQuery.of(context).padding.bottom + 8),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (chosen != null && chosen.isNotEmpty) {
+      _msgCtrl.text = chosen;
+      _send();
+    }
+  }
+
+  Future<void> _reactToMessage(MessageModel msg) async {
+    final emojis = ['❤️', '👍', '😂', '😮', '😢', '🔥', '🎉', '👎'];
+    final chosen = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => ClipRRect(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30),
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.08),
+              borderRadius:
+                  const BorderRadius.vertical(top: Radius.circular(20)),
+              border: Border(
+                top: BorderSide(
+                  color: Colors.white.withValues(alpha: 0.12),
+                  width: 0.5,
+                ),
+              ),
+            ),
+            padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text('Реакция',
+                    style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textPrimary)),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: emojis.map((e) {
+                    return GestureDetector(
+                      onTap: () => Navigator.pop(context, e),
+                      child: Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.06),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.08),
+                          ),
+                        ),
+                        child: Center(
+                            child: Text(e,
+                                style: const TextStyle(fontSize: 24))),
+                      ),
+                    );
+                  }).toList(),
+                ),
+                if (msg.reaction != null) ...[
+                  const SizedBox(height: 12),
+                  GestureDetector(
+                    onTap: () => Navigator.pop(context, '__remove__'),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: AppColors.error.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Text('Убрать реакцию',
+                          style: TextStyle(
+                              color: AppColors.error, fontSize: 14)),
+                    ),
+                  ),
+                ],
+                SizedBox(
+                    height: MediaQuery.of(context).padding.bottom + 8),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    if (chosen == null || !mounted) return;
+    final newReaction = chosen == '__remove__' ? null : chosen;
+    final updates = <String, dynamic>{};
+    if (newReaction == null) {
+      updates['reaction'] = FieldValue.delete();
+    } else {
+      updates['reaction'] = newReaction;
+    }
+    await _db
+        .collection('chats')
+        .doc(_chatId)
+        .collection('messages')
+        .doc(msg.id)
+        .update(updates);
+  }
+
+  Future<void> _forwardMessage(MessageModel msg) async {
+    final contacts = ref.read(contactsProvider);
+    if (contacts.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Нет контактов для пересылки'),
+          backgroundColor: AppColors.accent.withValues(alpha: 0.9),
+          behavior: SnackBarBehavior.floating,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      );
+      return;
+    }
+
+    final selectedUid = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => _ForwardContactPicker(contacts: contacts),
+    );
+
+    if (selectedUid == null || !mounted) return;
+
+    final fwdChatId = _buildChatId(_myUid, selectedUid);
+    final currentUser = ref.read(currentUserProvider);
+    final senderName = currentUser.displayName.isNotEmpty
+        ? currentUser.displayName
+        : currentUser.phoneNumber;
+
+    await _db.collection('chats').doc(fwdChatId).set({
+      'participants': [_myUid, selectedUid],
+      'lastMessage': msg.text,
+      'lastMessageAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    await _db
+        .collection('chats')
+        .doc(fwdChatId)
+        .collection('messages')
+        .add({
+      'chatId': fwdChatId,
+      'senderId': _myUid,
+      'senderName': senderName,
+      'text': msg.text,
+      'createdAt': FieldValue.serverTimestamp(),
+      'isRead': false,
+      'isEdited': false,
+      'isDeleted': false,
+      'forwardedFrom': msg.senderName,
+    });
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Сообщение переслано'),
+          backgroundColor: AppColors.accent.withValues(alpha: 0.9),
+          duration: const Duration(seconds: 1),
+          behavior: SnackBarBehavior.floating,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      );
+    }
+  }
+
+  void _showActions(MessageModel msg) {
+    final isMine = msg.senderId == _myUid;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => ClipRRect(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30),
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.08),
+              borderRadius:
+                  const BorderRadius.vertical(top: Radius.circular(20)),
+              border: Border(
+                top: BorderSide(
+                  color: Colors.white.withValues(alpha: 0.12),
+                  width: 0.5,
+                ),
+              ),
+            ),
+            child: SafeArea(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(height: 8),
+                  Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  _ActionTile(
+                    icon: Icons.reply_rounded,
+                    label: 'Ответить',
+                    onTap: () {
+                      Navigator.pop(context);
+                      _startReply(msg);
+                    },
+                  ),
+                  if (!msg.isDeleted)
+                    _ActionTile(
+                      icon: Icons.copy_rounded,
+                      label: 'Копировать',
+                      onTap: () {
+                        Navigator.pop(context);
+                        _copyText(msg.text);
+                      },
+                    ),
+                  if (!msg.isDeleted)
+                    _ActionTile(
+                      icon: Icons.forward_rounded,
+                      label: 'Переслать',
+                      onTap: () {
+                        Navigator.pop(context);
+                        _forwardMessage(msg);
+                      },
+                    ),
+                  if (!msg.isDeleted)
+                    _ActionTile(
+                      icon: msg.isStarred
+                          ? Icons.star_rounded
+                          : Icons.star_border_rounded,
+                      label: msg.isStarred
+                          ? 'Убрать из избранного'
+                          : 'В избранное',
+                      onTap: () {
+                        Navigator.pop(context);
+                        _toggleStar(msg);
+                      },
+                    ),
+                  if (!msg.isDeleted)
+                    _ActionTile(
+                      icon: Icons.emoji_emotions_outlined,
+                      label: 'Реакция',
+                      onTap: () {
+                        Navigator.pop(context);
+                        _reactToMessage(msg);
+                      },
+                    ),
+                  if (!msg.isDeleted)
+                    _ActionTile(
+                      icon: msg.isPinned
+                          ? Icons.push_pin_rounded
+                          : Icons.push_pin_outlined,
+                      label: msg.isPinned ? 'Открепить' : 'Закрепить',
+                      onTap: () {
+                        Navigator.pop(context);
+                        _togglePin(msg);
+                      },
+                    ),
+                  if (isMine && !msg.isDeleted)
+                    _ActionTile(
+                      icon: Icons.edit_rounded,
+                      label: 'Редактировать',
+                      onTap: () {
+                        Navigator.pop(context);
+                        _startEdit(msg);
+                      },
+                    ),
+                  if (isMine && !msg.isDeleted)
+                    _ActionTile(
+                      icon: Icons.delete_outline_rounded,
+                      label: 'Удалить',
+                      color: AppColors.error,
+                      onTap: () {
+                        Navigator.pop(context);
+                        _deleteMessage(msg.id);
+                      },
+                    ),
+                  const SizedBox(height: 8),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _scrollToBottom() {
+    Future.delayed(const Duration(milliseconds: 50), () {
+      if (_scrollCtrl.hasClients) {
+        _scrollCtrl.animateTo(
+          _scrollCtrl.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 150),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  bool _differentDay(DateTime a, DateTime b) {
+    return a.year != b.year || a.month != b.month || a.day != b.day;
+  }
+
+  // ─── Build ──────────────────────────────
+
+  @override
+  Widget build(BuildContext context) {
+    // Wallpaper gradients
+    const wallpapers = <List<Color>>[
+      [Color(0xFF0D1B2A), Color(0xFF1B2838)],
+      [Color(0xFF0B0E2D), Color(0xFF1A1040)],
+      [Color(0xFF0A1628), Color(0xFF0D2137)],
+      [Color(0xFF0A1A10), Color(0xFF122A18)],
+      [Color(0xFF1A0A28), Color(0xFF2D1040)],
+      [Color(0xFF2A0A0A), Color(0xFF401010)],
+      [Color(0xFF0A2828), Color(0xFF104040)],
+      [Color(0xFF1A1A0A), Color(0xFF2D2D10)],
+      [Color(0xFF0D0D1A), Color(0xFF15152A)],
+      [Color(0xFF1A0D1A), Color(0xFF2A152A)],
+      [Color(0xFF0D1A1A), Color(0xFF152A2A)],
+      [Color(0xFF1A1A1A), Color(0xFF2A2A2A)],
+    ];
+
+    return Scaffold(
+      backgroundColor: AppColors.black,
+      appBar: _multiSelectMode
+          ? PreferredSize(
+              preferredSize: const Size.fromHeight(60),
+              child: ClipRect(
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: AppColors.accent.withValues(alpha: 0.12),
+                      border: Border(
+                        bottom: BorderSide(
+                          color: Colors.white.withValues(alpha: 0.08),
+                          width: 0.5,
+                        ),
+                      ),
+                    ),
+                    child: SafeArea(
+                      bottom: false,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        child: Row(
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.close_rounded,
+                                  color: AppColors.textPrimary),
+                              onPressed: _exitMultiSelect,
+                            ),
+                            Text('${_selectedIds.length}',
+                                style: const TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.textPrimary)),
+                            const Spacer(),
+                            IconButton(
+                              icon: const Icon(Icons.delete_outline_rounded,
+                                  color: AppColors.error),
+                              onPressed: _bulkDelete,
+                              tooltip: 'Удалить выбранные',
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            )
+          : PreferredSize(
+        preferredSize: const Size.fromHeight(60),
+        child: ClipRect(
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.06),
+                border: Border(
+                  bottom: BorderSide(
+                    color: Colors.white.withValues(alpha: 0.08),
+                    width: 0.5,
+                  ),
+                ),
+              ),
+              child: SafeArea(
+                bottom: false,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: Row(
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.arrow_back_ios_rounded,
+                            size: 20, color: AppColors.textPrimary),
+                        onPressed: () => Navigator.pop(context),
+                      ),
+                      VAvatar(
+                        imageUrl: widget.peerAvatarUrl,
+                        name: widget.peerName,
+                        radius: 18,
+                      ),
+                      const SizedBox(width: AppSizes.sm),
+                      Expanded(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              widget.peerName,
+                              style: const TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: AppColors.textPrimary,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            // Online status
+                            _PeerStatus(peerId: widget.peerId),
+                          ],
+                        ),
+                      ),
+                      // Voice call button
+                      IconButton(
+                        icon: const Icon(Icons.call_rounded,
+                            size: 20, color: AppColors.textHint),
+                        onPressed: _startVoiceCall,
+                        tooltip: 'Голосовой звонок',
+                      ),
+                      // Video call button
+                      IconButton(
+                        icon: const Icon(Icons.videocam_rounded,
+                            size: 20, color: AppColors.textHint),
+                        onPressed: _startVideoCall,
+                        tooltip: 'Видеозвонок',
+                      ),
+                      // Search in chat
+                      IconButton(
+                        icon: Icon(
+                          _showChatSearch
+                              ? Icons.search_off_rounded
+                              : Icons.search_rounded,
+                          size: 20,
+                          color: _showChatSearch
+                              ? AppColors.accent
+                              : AppColors.textHint,
+                        ),
+                        onPressed: _toggleChatSearch,
+                        tooltip: 'Поиск в чате',
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.info_outline_rounded,
+                            size: 20, color: AppColors.textHint),
+                        onPressed: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => ChatInfoScreen(
+                              chatId: _chatId,
+                              peerId: widget.peerId,
+                              peerName: widget.peerName,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+      body: Container(
+        decoration: _wallpaperIndex >= 0 && _wallpaperIndex < wallpapers.length
+            ? BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: wallpapers[_wallpaperIndex],
+                ),
+              )
+            : null,
+        child: Column(
+        children: [
+          // ─── Pinned message bar ────────
+          _PinnedBar(chatId: _chatId),
+
+          // ─── Chat search bar ──────────
+          if (_showChatSearch)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.06),
+                border: Border(
+                  bottom: BorderSide(
+                    color: Colors.white.withValues(alpha: 0.06),
+                    width: 0.5,
+                  ),
+                ),
+              ),
+              child: TextField(
+                controller: _chatSearchCtrl,
+                autofocus: true,
+                style: const TextStyle(
+                    color: AppColors.textPrimary, fontSize: 14),
+                decoration: InputDecoration(
+                  hintText: 'Поиск в чате...',
+                  hintStyle: TextStyle(
+                    color: AppColors.textHint.withValues(alpha: 0.5),
+                  ),
+                  prefixIcon: Icon(Icons.search_rounded,
+                      size: 18,
+                      color: AppColors.textHint.withValues(alpha: 0.5)),
+                  filled: true,
+                  fillColor: Colors.white.withValues(alpha: 0.06),
+                  contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 8),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                  isDense: true,
+                ),
+                onChanged: (v) => setState(() => _chatSearchQuery = v.toLowerCase()),
+              ),
+            ),
+
+          // ─── Messages ──────────────────
+          Expanded(
+            child: StreamBuilder<QuerySnapshot>(
+              stream: _db
+                  .collection('chats')
+                  .doc(_chatId)
+                  .collection('messages')
+                  .orderBy('createdAt', descending: false)
+                  .snapshots(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(
+                    child: CircularProgressIndicator(
+                      color: AppColors.accent,
+                      strokeWidth: 2,
+                    ),
+                  );
+                }
+
+                final docs = snapshot.data?.docs ?? [];
+
+                if (docs.isEmpty) {
+                  return Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.chat_bubble_outline_rounded,
+                            size: 48,
+                            color: AppColors.textHint.withValues(alpha: 0.4)),
+                        const SizedBox(height: AppSizes.md),
+                        Text(
+                          'Напишите первое сообщение',
+                          style: TextStyle(
+                            color: AppColors.textHint.withValues(alpha: 0.6),
+                            fontSize: 14,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+
+                // ─── JITTER FIX ──────────────────────────
+                // Only scroll to bottom when new messages arrive
+                // (not on every stream rebuild / keyboard open)
+                final newCount = docs.length;
+                if (!_initialLoadDone) {
+                  // First load — scroll to bottom once
+                  _initialLoadDone = true;
+                  _lastDocCount = newCount;
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (_scrollCtrl.hasClients) {
+                      _scrollCtrl.jumpTo(
+                          _scrollCtrl.position.maxScrollExtent);
+                    }
+                    _markRead();
+                  });
+                } else if (newCount > _lastDocCount) {
+                  // New message(s) arrived
+                  _lastDocCount = newCount;
+                  // Only auto-scroll if user is near bottom
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (!_showScrollFab) {
+                      _scrollToBottom();
+                    }
+                    _markRead();
+                  });
+                }
+                // On isRead updates or other field changes,
+                // do NOT scroll — prevents jitter
+
+                return Stack(
+                  children: [
+                    ListView.builder(
+                      controller: _scrollCtrl,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: AppSizes.md,
+                        vertical: AppSizes.sm,
+                      ),
+                      // Use reverse:false with key to avoid jitter
+                      itemCount: docs.length,
+                      itemBuilder: (_, i) {
+                        final msg = MessageModel.fromFirestore(docs[i]);
+
+                        // Chat search filter
+                        if (_chatSearchQuery.isNotEmpty &&
+                            !msg.text
+                                .toLowerCase()
+                                .contains(_chatSearchQuery)) {
+                          return const SizedBox.shrink();
+                        }
+
+                        final isMine = msg.senderId == _myUid;
+
+                        // Date separator
+                        Widget? separator;
+                        if (i == 0 ||
+                            _differentDay(
+                                MessageModel.fromFirestore(docs[i - 1])
+                                    .createdAt,
+                                msg.createdAt)) {
+                          separator = _DateSeparator(date: msg.createdAt);
+                        }
+
+                        return Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (separator != null) separator,
+                            GestureDetector(
+                              onLongPress: () {
+                                if (_multiSelectMode) {
+                                  _toggleMultiSelect(msg.id);
+                                } else {
+                                  _showActions(msg);
+                                }
+                              },
+                              onDoubleTap: () => _reactToMessage(msg),
+                              onTap: _multiSelectMode
+                                  ? () => _toggleMultiSelect(msg.id)
+                                  : null,
+                              child: Dismissible(
+                                key: Key('swipe_${msg.id}'),
+                                direction: DismissDirection.startToEnd,
+                                confirmDismiss: (_) async {
+                                  _startReply(msg);
+                                  return false; // Don't actually dismiss
+                                },
+                                background: Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Padding(
+                                    padding: const EdgeInsets.only(left: 16),
+                                    child: Icon(Icons.reply_rounded,
+                                        color: AppColors.accent.withValues(alpha: 0.6),
+                                        size: 24),
+                                  ),
+                                ),
+                                child: Row(
+                                children: [
+                                  if (_multiSelectMode) ...[
+                                    Checkbox(
+                                      value: _selectedIds.contains(msg.id),
+                                      onChanged: (_) =>
+                                          _toggleMultiSelect(msg.id),
+                                      activeColor: AppColors.accent,
+                                      side: BorderSide(
+                                        color: AppColors.textHint
+                                            .withValues(alpha: 0.4),
+                                      ),
+                                    ),
+                                  ],
+                                  Expanded(
+                                    child: _MessageBubble(
+                                      msg: msg,
+                                      isMine: isMine,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                    // Scroll-to-bottom FAB
+                    if (_showScrollFab)
+                      Positioned(
+                        right: 12,
+                        bottom: 12,
+                        child: GestureDetector(
+                          onTap: _scrollToBottom,
+                          child: Container(
+                            width: 40,
+                            height: 40,
+                            decoration: BoxDecoration(
+                              color: AppColors.accent.withValues(alpha: 0.7),
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.15),
+                              ),
+                            ),
+                            child: const Icon(Icons.keyboard_arrow_down,
+                                color: Colors.white, size: 24),
+                          ),
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
+          ),
+
+          // ─── Typing indicator ──────────
+          _TypingIndicator(chatId: _chatId, peerId: widget.peerId),
+
+          // ─── Reply / Edit Preview ──────
+          if (_replyTo != null)
+            _InputPreviewBar(
+              icon: Icons.reply_rounded,
+              label: _replyTo!.senderName.isNotEmpty
+                  ? _replyTo!.senderName
+                  : 'Ответ',
+              text: _replyTo!.text,
+              onCancel: _cancelReply,
+            ),
+          if (_editingMsg != null)
+            _InputPreviewBar(
+              icon: Icons.edit_rounded,
+              label: 'Редактирование',
+              text: _editingMsg!.text,
+              onCancel: _cancelEdit,
+              accentColor: AppColors.warning,
+            ),
+
+          // ─── Input ─────────────────────
+          ClipRect(
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+              child: Container(
+                padding: EdgeInsets.only(
+                  left: AppSizes.md,
+                  right: AppSizes.sm,
+                  top: AppSizes.sm,
+                  bottom:
+                      MediaQuery.of(context).padding.bottom + AppSizes.sm,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.06),
+                  border: Border(
+                    top: BorderSide(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      width: 0.5,
+                    ),
+                  ),
+                ),
+                child: _isRecording
+                    // ── Recording bar ──
+                    ? Row(
+                        children: [
+                          Container(
+                            width: 10,
+                            height: 10,
+                            decoration: const BoxDecoration(
+                              color: AppColors.error,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            '${(_recordSeconds ~/ 60).toString().padLeft(2, '0')}:${(_recordSeconds % 60).toString().padLeft(2, '0')}',
+                            style: const TextStyle(
+                              color: AppColors.textPrimary,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                              fontFeatures: [FontFeature.tabularFigures()],
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            'Запись...',
+                            style: TextStyle(
+                              color: AppColors.textHint.withValues(alpha: 0.6),
+                              fontSize: 14,
+                            ),
+                          ),
+                          const Spacer(),
+                          GestureDetector(
+                            onTap: _cancelRecording,
+                            child: Container(
+                              width: 40,
+                              height: 40,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: Colors.white.withValues(alpha: 0.08),
+                              ),
+                              child: Icon(Icons.delete_rounded,
+                                  color: AppColors.error.withValues(alpha: 0.8),
+                                  size: 20),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          GestureDetector(
+                            onTap: () => _stopRecording(send: true),
+                            child: Container(
+                              width: 42,
+                              height: 42,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                gradient: LinearGradient(
+                                  colors: [
+                                    AppColors.success.withValues(alpha: 0.7),
+                                    AppColors.success.withValues(alpha: 0.5),
+                                  ],
+                                  begin: Alignment.topLeft,
+                                  end: Alignment.bottomRight,
+                                ),
+                                border: Border.all(
+                                  color: Colors.white.withValues(alpha: 0.15),
+                                  width: 0.5,
+                                ),
+                              ),
+                              child: const Icon(Icons.send_rounded,
+                                  color: Colors.white, size: 20),
+                            ),
+                          ),
+                        ],
+                      )
+                    // ── Normal input bar ──
+                    : Row(
+                  children: [
+                    // Attach file button (📎)
+                    GestureDetector(
+                      onTap: _attachFile,
+                      child: Padding(
+                        padding: const EdgeInsets.only(right: 4),
+                        child: Icon(Icons.attach_file_rounded,
+                            color: AppColors.textHint.withValues(alpha: 0.6),
+                            size: 22),
+                      ),
+                    ),
+                    // Quick replies button
+                    GestureDetector(
+                      onTap: _showQuickReplies,
+                      child: Padding(
+                        padding: const EdgeInsets.only(right: 4),
+                        child: Icon(Icons.flash_on_rounded,
+                            color: AppColors.accent.withValues(alpha: 0.7),
+                            size: 22),
+                      ),
+                    ),
+                    // Sticker button
+                    GestureDetector(
+                      onTap: () => setState(
+                          () => _showStickerPicker = !_showStickerPicker),
+                      child: Padding(
+                        padding: const EdgeInsets.only(right: 6),
+                        child: Icon(
+                          _showStickerPicker
+                              ? Icons.keyboard_rounded
+                              : Icons.emoji_emotions_outlined,
+                          color: _showStickerPicker
+                              ? AppColors.accent
+                              : AppColors.textHint.withValues(alpha: 0.6),
+                          size: 22,
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: TextField(
+                        controller: _msgCtrl,
+                        style: const TextStyle(
+                          color: AppColors.textPrimary,
+                          fontSize: 15,
+                        ),
+                        decoration: InputDecoration(
+                          hintText: _editingMsg != null
+                              ? 'Изменить сообщение...'
+                              : 'Сообщение...',
+                          hintStyle: TextStyle(
+                            color:
+                                AppColors.textHint.withValues(alpha: 0.5),
+                          ),
+                          filled: true,
+                          fillColor:
+                              Colors.white.withValues(alpha: 0.06),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: AppSizes.md,
+                            vertical: 10,
+                          ),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(
+                                AppSizes.radiusLarge),
+                            borderSide: BorderSide.none,
+                          ),
+                        ),
+                        textInputAction: TextInputAction.send,
+                        onSubmitted: (_) => _send(),
+                      ),
+                    ),
+                    const SizedBox(width: AppSizes.sm),
+                    // Send or Mic button
+                    if (_hasText || _editingMsg != null)
+                      GestureDetector(
+                        onTap: _send,
+                        child: Container(
+                          width: 42,
+                          height: 42,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient: LinearGradient(
+                              colors: _editingMsg != null
+                                  ? [
+                                      AppColors.warning
+                                          .withValues(alpha: 0.7),
+                                      AppColors.warning
+                                          .withValues(alpha: 0.5),
+                                    ]
+                                  : [
+                                      AppColors.accent
+                                          .withValues(alpha: 0.7),
+                                      AppColors.accentLight
+                                          .withValues(alpha: 0.5),
+                                    ],
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                            ),
+                            border: Border.all(
+                              color:
+                                  Colors.white.withValues(alpha: 0.15),
+                              width: 0.5,
+                            ),
+                          ),
+                          child: Icon(
+                            _editingMsg != null
+                                ? Icons.check_rounded
+                                : Icons.send_rounded,
+                            color: Colors.white,
+                            size: 20,
+                          ),
+                        ),
+                      )
+                    else
+                      GestureDetector(
+                        onTap: _startRecording,
+                        child: Container(
+                          width: 42,
+                          height: 42,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            gradient: LinearGradient(
+                              colors: [
+                                AppColors.error.withValues(alpha: 0.6),
+                                AppColors.error.withValues(alpha: 0.4),
+                              ],
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                            ),
+                            border: Border.all(
+                              color:
+                                  Colors.white.withValues(alpha: 0.15),
+                              width: 0.5,
+                            ),
+                          ),
+                          child: const Icon(
+                            Icons.mic_rounded,
+                            color: Colors.white,
+                            size: 22,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+
+          // ─── Sticker Picker ────────────
+          if (_showStickerPicker) _StickerPickerPanel(onStickerTap: _sendSticker),
+        ],
+      ),
+      ), // end wallpaper Container
+    );
+  }
+}
+
+// ─── Pinned Message Bar ──────────────────────────────────
+
+class _PinnedBar extends StatelessWidget {
+  const _PinnedBar({required this.chatId});
+  final String chatId;
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('chats')
+          .doc(chatId)
+          .collection('messages')
+          .where('isPinned', isEqualTo: true)
+          .limit(1)
+          .snapshots(),
+      builder: (_, snap) {
+        final docs = snap.data?.docs ?? [];
+        if (docs.isEmpty) return const SizedBox.shrink();
+        final msg = MessageModel.fromFirestore(docs.first);
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          decoration: BoxDecoration(
+            color: AppColors.accent.withValues(alpha: 0.08),
+            border: Border(
+              bottom: BorderSide(
+                color: Colors.white.withValues(alpha: 0.06),
+                width: 0.5,
+              ),
+              left: const BorderSide(color: AppColors.accent, width: 3),
+            ),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.push_pin_rounded,
+                  size: 16, color: AppColors.accent),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('Закреплено',
+                        style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.accent)),
+                    Text(msg.text,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            fontSize: 13,
+                            color: AppColors.textSecondary
+                                .withValues(alpha: 0.7))),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ─── Peer Online Status ──────────────────────────────────
+
+class _PeerStatus extends StatelessWidget {
+  const _PeerStatus({required this.peerId});
+  final String peerId;
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<DocumentSnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('users')
+          .doc(peerId)
+          .snapshots(),
+      builder: (_, snap) {
+        if (!snap.hasData || !snap.data!.exists) {
+          return const SizedBox.shrink();
+        }
+        final data = snap.data!.data() as Map<String, dynamic>? ?? {};
+        final isOnline = data['isOnline'] as bool? ?? false;
+        final lastSeen = (data['lastSeen'] as Timestamp?)?.toDate();
+
+        String statusText;
+        if (isOnline) {
+          statusText = 'в сети';
+        } else if (lastSeen != null) {
+          final diff = DateTime.now().difference(lastSeen);
+          if (diff.inMinutes < 1) {
+            statusText = 'только что';
+          } else if (diff.inHours < 1) {
+            statusText = '${diff.inMinutes} мин. назад';
+          } else if (diff.inDays < 1) {
+            statusText = '${diff.inHours} ч. назад';
+          } else {
+            statusText =
+                '${lastSeen.day}.${lastSeen.month.toString().padLeft(2, '0')}';
+          }
+        } else {
+          return const SizedBox.shrink();
+        }
+
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (isOnline)
+              Container(
+                width: 7,
+                height: 7,
+                margin: const EdgeInsets.only(right: 4),
+                decoration: const BoxDecoration(
+                  color: AppColors.success,
+                  shape: BoxShape.circle,
+                ),
+              ),
+            Text(
+              statusText,
+              style: TextStyle(
+                fontSize: 12,
+                color: isOnline
+                    ? AppColors.success
+                    : AppColors.textHint.withValues(alpha: 0.6),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+// ─── Typing Indicator ────────────────────────────────────
+
+class _TypingIndicator extends StatelessWidget {
+  const _TypingIndicator({required this.chatId, required this.peerId});
+  final String chatId;
+  final String peerId;
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<DocumentSnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('chats')
+          .doc(chatId)
+          .snapshots(),
+      builder: (_, snap) {
+        if (!snap.hasData || !snap.data!.exists) {
+          return const SizedBox.shrink();
+        }
+        final data = snap.data!.data() as Map<String, dynamic>? ?? {};
+        final peerTyping = data['typing_$peerId'] as bool? ?? false;
+        if (!peerTyping) return const SizedBox.shrink();
+
+        return Padding(
+          padding: const EdgeInsets.only(left: 20, bottom: 4),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _BouncingDots(),
+                const SizedBox(width: 6),
+                Text(
+                  'печатает...',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textHint.withValues(alpha: 0.6),
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _BouncingDots extends StatefulWidget {
+  @override
+  State<_BouncingDots> createState() => _BouncingDotsState();
+}
+
+class _BouncingDotsState extends State<_BouncingDots>
+    with TickerProviderStateMixin {
+  late final List<AnimationController> _ctrls;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrls = List.generate(3, (i) {
+      final ctrl = AnimationController(
+        vsync: this,
+        duration: const Duration(milliseconds: 600),
+      );
+      Future.delayed(Duration(milliseconds: i * 180), () {
+        if (mounted) ctrl.repeat(reverse: true);
+      });
+      return ctrl;
+    });
+  }
+
+  @override
+  void dispose() {
+    for (final c in _ctrls) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: _ctrls.map((ctrl) {
+        return AnimatedBuilder(
+          animation: ctrl,
+          builder: (_, __) => Container(
+            width: 5,
+            height: 5,
+            margin: const EdgeInsets.symmetric(horizontal: 1),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: AppColors.textHint
+                  .withValues(alpha: 0.3 + ctrl.value * 0.5),
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+}
+
+// ─── Input Preview Bar (Reply / Edit) ────────────────────
+
+class _InputPreviewBar extends StatelessWidget {
+  const _InputPreviewBar({
+    required this.icon,
+    required this.label,
+    required this.text,
+    required this.onCancel,
+    this.accentColor = AppColors.accent,
+  });
+
+  final IconData icon;
+  final String label;
+  final String text;
+  final VoidCallback onCancel;
+  final Color accentColor;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: accentColor.withValues(alpha: 0.08),
+        border: Border(
+          left: BorderSide(color: accentColor, width: 3),
+          top: BorderSide(
+            color: Colors.white.withValues(alpha: 0.05),
+            width: 0.5,
+          ),
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: accentColor),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: accentColor,
+                  ),
+                ),
+                Text(
+                  text,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: AppColors.textSecondary.withValues(alpha: 0.7),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          GestureDetector(
+            onTap: onCancel,
+            child: Icon(
+              Icons.close_rounded,
+              size: 18,
+              color: AppColors.textHint.withValues(alpha: 0.6),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── Action Tile ─────────────────────────────────────────
+
+class _ActionTile extends StatelessWidget {
+  const _ActionTile({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.color = AppColors.textPrimary,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding:
+              const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+          child: Row(
+            children: [
+              Icon(icon, size: 22, color: color),
+              const SizedBox(width: 14),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 16,
+                  color: color,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Forward Contact Picker ──────────────────────────────
+
+class _ForwardContactPicker extends StatelessWidget {
+  const _ForwardContactPicker({required this.contacts});
+  final List<dynamic> contacts;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30),
+        child: Container(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.6,
+          ),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.08),
+            borderRadius:
+                const BorderRadius.vertical(top: Radius.circular(20)),
+            border: Border(
+              top: BorderSide(
+                color: Colors.white.withValues(alpha: 0.12),
+                width: 0.5,
+              ),
+            ),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 12),
+              Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Переслать',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: contacts.length,
+                  itemBuilder: (_, i) {
+                    final c = contacts[i];
+                    final name = c.name as String? ?? '';
+                    final uid = (c.linkedUserId as String?) ?? '';
+                    if (uid.isEmpty) return const SizedBox.shrink();
+
+                    return Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        onTap: () => Navigator.pop(context, uid),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 20, vertical: 12),
+                          child: Row(
+                            children: [
+                              VAvatar(name: name, radius: 20),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  name,
+                                  style: const TextStyle(
+                                    fontSize: 15,
+                                    color: AppColors.textPrimary,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                              const Icon(
+                                Icons.send_rounded,
+                                size: 18,
+                                color: AppColors.accent,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              SizedBox(
+                  height: MediaQuery.of(context).padding.bottom + 8),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Date Separator ──────────────────────────────────
+
+class _DateSeparator extends StatelessWidget {
+  const _DateSeparator({required this.date});
+  final DateTime date;
+
+  @override
+  Widget build(BuildContext context) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final d = DateTime(date.year, date.month, date.day);
+    String label;
+    if (d == today) {
+      label = 'Сегодня';
+    } else if (d == today.subtract(const Duration(days: 1))) {
+      label = 'Вчера';
+    } else {
+      label =
+          '${date.day}.${date.month.toString().padLeft(2, '0')}.${date.year}';
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.07),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              color: AppColors.textHint.withValues(alpha: 0.6),
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Message Bubble ──────────────────────────────────────
+
+class _MessageBubble extends StatelessWidget {
+  const _MessageBubble({
+    required this.msg,
+    required this.isMine,
+  });
+
+  final MessageModel msg;
+  final bool isMine;
+
+  static final _urlRegex = RegExp(
+    r'https?://[^\s]+',
+    caseSensitive: false,
+  );
+
+  static String? _extractUrl(String text) {
+    final match = _urlRegex.firstMatch(text);
+    return match?.group(0);
+  }
+
+  static String _formatFileSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final timeStr = msg.createdAt != DateTime(0)
+        ? '${msg.createdAt.hour.toString().padLeft(2, '0')}:${msg.createdAt.minute.toString().padLeft(2, '0')}'
+        : '';
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Align(
+        alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
+        child: Container(
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.of(context).size.width * 0.75,
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: msg.isDeleted
+                ? Colors.white.withValues(alpha: 0.04)
+                : isMine
+                    ? AppColors.accent.withValues(alpha: 0.6)
+                    : Colors.white.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.only(
+              topLeft: const Radius.circular(16),
+              topRight: const Radius.circular(16),
+              bottomLeft: Radius.circular(isMine ? 16 : 4),
+              bottomRight: Radius.circular(isMine ? 4 : 16),
+            ),
+            border: Border.all(
+              color: msg.isDeleted
+                  ? Colors.white.withValues(alpha: 0.04)
+                  : isMine
+                      ? AppColors.accent.withValues(alpha: 0.3)
+                      : Colors.white.withValues(alpha: 0.06),
+              width: 0.5,
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment:
+                isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Forwarded label
+              if (msg.forwardedFrom != null && !msg.isDeleted) ...[
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.forward_rounded,
+                        size: 12,
+                        color: isMine
+                            ? Colors.white.withValues(alpha: 0.5)
+                            : AppColors.textHint.withValues(alpha: 0.5)),
+                    const SizedBox(width: 4),
+                    Text(
+                      'Переслано от ${msg.forwardedFrom}',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontStyle: FontStyle.italic,
+                        color: isMine
+                            ? Colors.white.withValues(alpha: 0.5)
+                            : AppColors.textHint.withValues(alpha: 0.5),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+              ],
+
+              // Reply preview
+              if (msg.replyToText != null && !msg.isDeleted) ...[
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.06),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border(
+                      left: BorderSide(
+                        color: AppColors.accentLight.withValues(alpha: 0.6),
+                        width: 2,
+                      ),
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (msg.replyToSender != null)
+                        Text(
+                          msg.replyToSender!,
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.accentLight
+                                .withValues(alpha: 0.8),
+                          ),
+                        ),
+                      Text(
+                        msg.replyToText!,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: isMine
+                              ? Colors.white.withValues(alpha: 0.6)
+                              : AppColors.textSecondary
+                                  .withValues(alpha: 0.6),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 6),
+              ],
+
+              // Message text or deleted placeholder
+              if (msg.isDeleted)
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.block_rounded,
+                        size: 14,
+                        color: AppColors.textHint.withValues(alpha: 0.4)),
+                    const SizedBox(width: 4),
+                    Text(
+                      'Сообщение удалено',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontStyle: FontStyle.italic,
+                        color: AppColors.textHint.withValues(alpha: 0.4),
+                      ),
+                    ),
+                  ],
+                )
+              else ...[
+                // Sticker message — big emoji
+                if (msg.mediaType == 'sticker') ...[
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Text(msg.text,
+                        style: const TextStyle(fontSize: 56)),
+                  ),
+                ]
+                // File message
+                else if (msg.mediaType == 'file') ...[
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.06),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.08),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.insert_drive_file_rounded,
+                            size: 28,
+                            color: AppColors.accent.withValues(alpha: 0.8)),
+                        const SizedBox(width: 10),
+                        Flexible(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                msg.mediaName ?? 'Файл',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  color: isMine
+                                      ? Colors.white
+                                      : AppColors.textPrimary,
+                                ),
+                              ),
+                              if (msg.mediaSize != null)
+                                Text(
+                                  _formatFileSize(msg.mediaSize!),
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: isMine
+                                        ? Colors.white.withValues(alpha: 0.6)
+                                        : AppColors.textHint
+                                            .withValues(alpha: 0.6),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ]
+                // Voice message
+                else if (msg.mediaType == 'voice') ...[
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.06),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.08),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 36,
+                          height: 36,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: isMine
+                                ? Colors.white.withValues(alpha: 0.15)
+                                : AppColors.accent.withValues(alpha: 0.15),
+                          ),
+                          child: Icon(Icons.play_arrow_rounded,
+                              size: 22,
+                              color: isMine
+                                  ? Colors.white
+                                  : AppColors.accent),
+                        ),
+                        const SizedBox(width: 10),
+                        // Waveform placeholder
+                        Flexible(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              // Simulated waveform bars
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: List.generate(16, (i) {
+                                  final h = 4.0 + (i * 7 % 13).toDouble();
+                                  return Container(
+                                    width: 3,
+                                    height: h,
+                                    margin: const EdgeInsets.symmetric(horizontal: 1),
+                                    decoration: BoxDecoration(
+                                      color: isMine
+                                          ? Colors.white.withValues(alpha: 0.5)
+                                          : AppColors.accent.withValues(alpha: 0.5),
+                                      borderRadius: BorderRadius.circular(2),
+                                    ),
+                                  );
+                                }),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                msg.mediaSize != null
+                                    ? '${(msg.mediaSize! ~/ 60).toString().padLeft(2, '0')}:${(msg.mediaSize! % 60).toString().padLeft(2, '0')}'
+                                    : '0:00',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: isMine
+                                      ? Colors.white.withValues(alpha: 0.6)
+                                      : AppColors.textHint.withValues(alpha: 0.6),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ]
+                // Normal message with possible link preview
+                else ...[
+                // Link preview (detect URLs)
+                if (_extractUrl(msg.text) != null) ...[
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 6),
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.06),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.08),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.link_rounded,
+                            size: 16,
+                            color: AppColors.accentLight.withValues(alpha: 0.7)),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: Text(
+                            _extractUrl(msg.text)!,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: AppColors.accentLight.withValues(alpha: 0.8),
+                              decoration: TextDecoration.underline,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                Text(
+                  msg.text,
+                  style: TextStyle(
+                    color: isMine ? Colors.white : AppColors.textPrimary,
+                    fontSize: 15,
+                  ),
+                ),
+                ],
+              ],
+
+              const SizedBox(height: 4),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (msg.isEdited && !msg.isDeleted) ...[
+                    Text(
+                      'ред.',
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontStyle: FontStyle.italic,
+                        color: isMine
+                            ? Colors.white.withValues(alpha: 0.45)
+                            : AppColors.textHint.withValues(alpha: 0.45),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                  ],
+                  Text(
+                    timeStr,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: isMine
+                          ? Colors.white.withValues(alpha: 0.6)
+                          : AppColors.textHint.withValues(alpha: 0.6),
+                    ),
+                  ),
+                  if (isMine) ...[
+                    const SizedBox(width: 4),
+                    Icon(
+                      msg.isRead ? Icons.done_all : Icons.done,
+                      size: 14,
+                      color: msg.isRead
+                          ? Colors.lightBlueAccent
+                          : Colors.white.withValues(alpha: 0.6),
+                    ),
+                  ],
+                  if (msg.isStarred) ...[
+                    const SizedBox(width: 4),
+                    Icon(Icons.star_rounded,
+                        size: 12,
+                        color: Colors.amber.withValues(alpha: 0.7)),
+                  ],
+                  if (msg.isPinned) ...[
+                    const SizedBox(width: 4),
+                    Icon(Icons.push_pin_rounded,
+                        size: 11,
+                        color: AppColors.accentLight.withValues(alpha: 0.6)),
+                  ],
+                ],
+              ),
+              // Reaction badge
+              if (msg.reaction != null) ...[
+                const SizedBox(height: 2),
+                Align(
+                  alignment:
+                      isMine ? Alignment.centerRight : Alignment.centerLeft,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(msg.reaction!,
+                        style: const TextStyle(fontSize: 16)),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Sticker Picker Panel ────────────────────────────────
+
+class _StickerPickerPanel extends StatefulWidget {
+  const _StickerPickerPanel({required this.onStickerTap});
+  final void Function(String emoji) onStickerTap;
+
+  @override
+  State<_StickerPickerPanel> createState() => _StickerPickerPanelState();
+}
+
+class _StickerPickerPanelState extends State<_StickerPickerPanel> {
+  int _selectedPackIndex = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final packs = StickerPack.builtInPacks;
+
+    return Container(
+      height: 260,
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.06),
+        border: Border(
+          top: BorderSide(
+            color: Colors.white.withValues(alpha: 0.08),
+            width: 0.5,
+          ),
+        ),
+      ),
+      child: Column(
+        children: [
+          // Pack tabs
+          SizedBox(
+            height: 44,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              itemCount: packs.length,
+              itemBuilder: (_, i) {
+                final isSelected = i == _selectedPackIndex;
+                return GestureDetector(
+                  onTap: () => setState(() => _selectedPackIndex = i),
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 4),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: isSelected
+                          ? AppColors.accent.withValues(alpha: 0.2)
+                          : Colors.white.withValues(alpha: 0.06),
+                      borderRadius: BorderRadius.circular(12),
+                      border: isSelected
+                          ? Border.all(
+                              color: AppColors.accent.withValues(alpha: 0.4),
+                              width: 0.5)
+                          : null,
+                    ),
+                    child: Text(
+                      packs[i].name,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight:
+                            isSelected ? FontWeight.w600 : FontWeight.w400,
+                        color: isSelected
+                            ? AppColors.accent
+                            : AppColors.textSecondary,
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          // Sticker grid
+          Expanded(
+            child: GridView.builder(
+              padding: const EdgeInsets.all(8),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 4,
+                childAspectRatio: 1,
+                mainAxisSpacing: 4,
+                crossAxisSpacing: 4,
+              ),
+              itemCount: packs[_selectedPackIndex].stickers.length,
+              itemBuilder: (_, i) {
+                final sticker = packs[_selectedPackIndex].stickers[i];
+                return GestureDetector(
+                  onTap: () => widget.onStickerTap(sticker.emoji),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.04),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(sticker.emoji,
+                            style: const TextStyle(fontSize: 32)),
+                        if (sticker.label != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Text(
+                              sticker.label!,
+                              style: TextStyle(
+                                fontSize: 9,
+                                color: AppColors.textHint
+                                    .withValues(alpha: 0.5),
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

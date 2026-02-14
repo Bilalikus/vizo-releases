@@ -1,0 +1,68 @@
+name: vizo
+description: "Vizo — Encrypted Calling App"
+publish_to: 'none'
+version: 1.6.0+7
+
+environment:
+  sdk: ^3.7.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State Management
+  flutter_riverpod: ^2.6.1
+
+  # Firebase
+  firebase_core: ^3.12.1
+  firebase_auth: ^5.5.1
+  cloud_firestore: ^5.6.5
+
+  # WebRTC
+  flutter_webrtc: ^0.12.9
+
+  # Encryption (AES-256)
+  encrypt: ^5.0.3
+  pointycastle: ^3.9.1
+
+  # Image Picking
+  image_picker: ^1.1.2
+
+  # UUID generation
+  uuid: ^4.5.1
+
+  # OTP pin input
+  pinput: ^5.0.1
+
+  # Cached images
+  cached_network_image: ^3.4.1
+
+  # HTTP client (for REST API auth on desktop)
+  http: ^1.2.1
+
+  # File system paths
+  path_provider: ^2.1.0
+
+  # Open files (APK install on Android, DMG on macOS)
+  open_filex: ^4.5.0
+
+  # Permissions
+  permission_handler: ^11.3.1
+  shared_preferences: ^2.5.4
+
+  # File picker
+  file_picker: ^8.1.7
+
+  # Audio playback
+  audioplayers: ^6.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/Icon.png

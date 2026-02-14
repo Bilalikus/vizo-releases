@@ -1,0 +1,47 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // OTP Codes
+    match /otp_codes/{phoneId} {
+      allow read, write: if true;
+    }
+
+    // Users
+    match /users/{userId} {
+      allow read: if true;
+      allow write: if true;
+
+      match /contacts/{contactId} {
+        allow read, write: if true;
+      }
+    }
+
+    // Calls (signaling)
+    match /calls/{callId} {
+      allow read, write: if true;
+
+      match /callerCandidates/{candidateId} {
+        allow read, write: if true;
+      }
+      match /receiverCandidates/{candidateId} {
+        allow read, write: if true;
+      }
+    }
+
+    // Chats
+    match /chats/{chatId} {
+      allow read, write: if true;
+
+      match /messages/{messageId} {
+        allow read, write: if true;
+      }
+    }
+
+    // App Config (version, updates)
+    match /app_config/{docId} {
+      allow read: if true;
+      allow write: if true;
+    }
+  }
+}

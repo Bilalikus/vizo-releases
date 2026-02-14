@@ -1,0 +1,66 @@
+{
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "storage": {
+    "rules": "storage.rules"
+  },
+  "hosting": {
+    "public": "hosting",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "headers": [
+      {
+        "source": "**/*.apk",
+        "headers": [
+          { "key": "Content-Type", "value": "application/vnd.android.package-archive" },
+          { "key": "Content-Disposition", "value": "attachment" }
+        ]
+      },
+      {
+        "source": "**/*.dmg",
+        "headers": [
+          { "key": "Content-Type", "value": "application/x-apple-diskimage" },
+          { "key": "Content-Disposition", "value": "attachment" }
+        ]
+      }
+    ]
+  },
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "vizo-app-8e1cf",
+          "appId": "1:1052407881927:android:38d9d3a76e0bf4eb87dee2",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "ios": {
+        "default": {
+          "projectId": "vizo-app-8e1cf",
+          "appId": "1:1052407881927:ios:999051bc4175f5c687dee2",
+          "uploadDebugSymbols": false,
+          "fileOutput": "ios/Runner/GoogleService-Info.plist"
+        }
+      },
+      "macos": {
+        "default": {
+          "projectId": "vizo-app-8e1cf",
+          "appId": "1:1052407881927:ios:999051bc4175f5c687dee2",
+          "uploadDebugSymbols": false,
+          "fileOutput": "macos/Runner/GoogleService-Info.plist"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "vizo-app-8e1cf",
+          "configurations": {
+            "android": "1:1052407881927:android:38d9d3a76e0bf4eb87dee2",
+            "ios": "1:1052407881927:ios:999051bc4175f5c687dee2",
+            "macos": "1:1052407881927:ios:999051bc4175f5c687dee2"
+          }
+        }
+      }
+    }
+  }
+}
