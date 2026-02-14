@@ -50,7 +50,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   MessageModel? _editingMsg;
   Timer? _typingTimer;
   bool _amTyping = false;
-  bool _showScrollFab = false;
+  final _showScrollFab = ValueNotifier<bool>(false);
 
   // ─── Multi-select state ────────────────
   bool _multiSelectMode = false;
@@ -59,7 +59,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   // ─── Wallpaper ─────────────────────────
   int _wallpaperIndex = -1;
 
-  // ─── Track message count for auto-scroll ──
+  // ─── Read tracking ──
   int _lastDocCount = 0;
 
   // ─── Sticker picker state ──────────────
@@ -104,7 +104,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     if (!_scrollCtrl.hasClients) return;
     // reverse: true — pixels > 0 means user scrolled UP from bottom
     final show = _scrollCtrl.position.pixels > 300;
-    if (show != _showScrollFab) setState(() => _showScrollFab = show);
+    if (show != _showScrollFab.value) _showScrollFab.value = show;
   }
 
   @override
@@ -114,6 +114,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     _scrollCtrl.removeListener(_onScroll);
     _msgCtrl.dispose();
     _scrollCtrl.dispose();
+    _showScrollFab.dispose();
     _chatSearchCtrl.dispose();
     _typingTimer?.cancel();
     _recordTimer?.cancel();
@@ -238,7 +239,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         .add(msgData);
 
     _cancelReply();
-    _scrollToBottom();
   }
 
   // ─── Send Sticker ──────────────────────
@@ -273,7 +273,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     });
 
     setState(() => _showStickerPicker = false);
-    _scrollToBottom();
   }
 
   // ─── Attach File ──────────────────────
@@ -479,7 +478,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       _pendingMediaType = null;
       _hasText = false;
     });
-    _scrollToBottom();
   }
 
   // ─── Voice recording ──────────────────
@@ -540,8 +538,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
       'isEdited': false,
       'isDeleted': false,
     });
-
-    _scrollToBottom();
   }
 
   void _cancelRecording() {
@@ -1097,15 +1093,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   }
 
   void _scrollToBottom() {
-    Future.delayed(const Duration(milliseconds: 50), () {
-      if (_scrollCtrl.hasClients) {
-        _scrollCtrl.animateTo(
-          0, // reverse: true — 0 is the bottom (newest messages)
-          duration: const Duration(milliseconds: 150),
-          curve: Curves.easeOut,
-        );
-      }
-    });
+    if (_scrollCtrl.hasClients) {
+      _scrollCtrl.animateTo(
+        0, // reverse: true — 0 is the bottom (newest messages)
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+      );
+    }
   }
 
   bool _differentDay(DateTime a, DateTime b) {
@@ -1379,13 +1373,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   );
                 }
 
-                // Mark messages as read when new ones arrive
-                final newCount = docs.length;
-                if (newCount != _lastDocCount) {
-                  _lastDocCount = newCount;
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    _markRead();
-                  });
+                // Mark messages as read (no scroll, no rebuild)
+                if (docs.length != _lastDocCount) {
+                  _lastDocCount = docs.length;
+                  _markRead();
                 }
 
                 return Stack(
@@ -1493,9 +1484,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                         );
                       },
                     ),
-                    // Scroll-to-bottom FAB
-                    if (_showScrollFab)
-                      Positioned(
+                    // Scroll-to-bottom FAB (uses ValueListenableBuilder — no parent rebuilds)
+                    ValueListenableBuilder<bool>(
+                      valueListenable: _showScrollFab,
+                      builder: (_, show, child) {
+                        if (!show) return const SizedBox.shrink();
+                        return child!;
+                      },
+                      child: Positioned(
                         right: 12,
                         bottom: 12,
                         child: GestureDetector(
@@ -1515,6 +1511,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                           ),
                         ),
                       ),
+                    ),
                   ],
                 );
               },
