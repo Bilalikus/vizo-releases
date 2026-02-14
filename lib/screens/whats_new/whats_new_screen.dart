@@ -5,6 +5,28 @@ import '../../core/constants/constants.dart';
 
 /// Changelog entries per version.
 const Map<String, List<_ChangeEntry>> _changelog = {
+  '1.7.0': [
+    _ChangeEntry(Icons.chat_bubble_outline_rounded, 'Чат полностью переписан',
+        'Исправлена критическая проблема с прокруткой — чат больше НЕ перескакивает наверх.'),
+    _ChangeEntry(Icons.photo_rounded, 'Исправлены фотографии',
+        'Фото теперь корректно отображаются — поддержка base64, локальных файлов и URL.'),
+    _ChangeEntry(Icons.play_circle_rounded, 'Видеоплеер',
+        'Полноценный видеоплеер с управлением — play/pause, прогресс-бар, полный экран.'),
+    _ChangeEntry(Icons.high_quality_rounded, 'Адаптивное качество видеозвонков',
+        'Алгоритм автоматически подстраивает качество видео под сеть: HD → 480p → 360p → 240p.'),
+    _ChangeEntry(Icons.speed_rounded, 'Улучшение видеозвонков',
+        'Мониторинг потери пакетов и RTT — автоматическое повышение/понижение битрейта.'),
+    _ChangeEntry(Icons.attach_file_rounded, 'Исправлена панель вложений',
+        'Панель предпросмотра файла теперь корректно исчезает после отправки.'),
+    _ChangeEntry(Icons.image_rounded, 'Полноэкранный просмотр фото',
+        'Нажмите на фото в чате → полноэкранный просмотр с зумом и жестами.'),
+    _ChangeEntry(Icons.mic_rounded, 'Голосовые сообщения',
+        'Улучшена визуальная анимация воспроизведения голосовых сообщений.'),
+    _ChangeEntry(Icons.memory_rounded, 'Оптимизация памяти',
+        'Фото больше не кодируются в base64 — экономия памяти и трафика.'),
+    _ChangeEntry(Icons.network_check_rounded, 'Мониторинг сети',
+        'Видеозвонки отслеживают RTT, потерю пакетов и битрейт каждые 4 секунды.'),
+  ],
   '1.6.0': [
     _ChangeEntry(Icons.videocam_rounded, 'Видеозвонки',
         'Звоните с видео — переключайте камеру, включайте/выключайте видео.'),

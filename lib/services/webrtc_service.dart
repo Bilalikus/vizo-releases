@@ -22,6 +22,7 @@ class WebRTCService {
   StreamSubscription? _candidatesSubscription;
   Timer? _ringTimeout;
   Timer? _disconnectTimeout;
+  Timer? _qualityTimer;
 
   String? _currentCallId;
   bool _isCaller = false;
@@ -29,6 +30,15 @@ class WebRTCService {
   bool _isVideoCall = false;
   bool _isVideoEnabled = false;
   bool _isScreenSharing = false;
+
+  // ─── Adaptive quality state ─────────────
+  int _currentQualityLevel = 0; // 0=high, 1=medium, 2=low, 3=minimal
+  static const _qualityLadder = [
+    {'maxBitrate': 2000000, 'maxFramerate': 30, 'label': 'HD 720p'},
+    {'maxBitrate': 1000000, 'maxFramerate': 25, 'label': '480p'},
+    {'maxBitrate': 500000, 'maxFramerate': 20, 'label': '360p'},
+    {'maxBitrate': 250000, 'maxFramerate': 15, 'label': '240p'},
+  ];
 
   // Callbacks
   void Function(MediaStream stream)? onLocalStream;
@@ -95,6 +105,137 @@ class WebRTCService {
     return stream;
   }
 
+  // ─── Adaptive Video Quality Algorithm ──────────────
+
+  int _prevBytesSent = 0;
+  int _prevTimestamp = 0;
+  int _consecutiveBadReports = 0;
+  int _consecutiveGoodReports = 0;
+
+  void _startQualityMonitor() {
+    if (!_isVideoCall) return;
+    _qualityTimer?.cancel();
+    _currentQualityLevel = 0;
+    _prevBytesSent = 0;
+    _prevTimestamp = 0;
+    _consecutiveBadReports = 0;
+    _consecutiveGoodReports = 0;
+
+    // Check every 4 seconds
+    _qualityTimer = Timer.periodic(const Duration(seconds: 4), (_) async {
+      await _evaluateAndAdaptQuality();
+    });
+  }
+
+  void _stopQualityMonitor() {
+    _qualityTimer?.cancel();
+    _qualityTimer = null;
+  }
+
+  Future<void> _evaluateAndAdaptQuality() async {
+    if (_peerConnection == null || !_isVideoCall || _isScreenSharing) return;
+
+    try {
+      final stats = await _peerConnection!.getStats();
+      
+      int bytesSent = 0;
+      int packetsLost = 0;
+      int packetsReceived = 0;
+      double? roundTripTime;
+      int timestamp = DateTime.now().millisecondsSinceEpoch;
+
+      for (final report in stats) {
+        final values = report.values;
+        final type = report.type;
+
+        if (type == 'outbound-rtp' && values['kind'] == 'video') {
+          bytesSent = (values['bytesSent'] as num?)?.toInt() ?? 0;
+        }
+        if (type == 'inbound-rtp' && values['kind'] == 'video') {
+          packetsLost = (values['packetsLost'] as num?)?.toInt() ?? 0;
+          packetsReceived = (values['packetsReceived'] as num?)?.toInt() ?? 0;
+        }
+        if (type == 'candidate-pair' && values['state'] == 'succeeded') {
+          roundTripTime = (values['currentRoundTripTime'] as num?)?.toDouble();
+        }
+      }
+
+      // Calculate metrics
+      if (_prevTimestamp > 0) {
+        final dt = (timestamp - _prevTimestamp) / 1000.0;
+        if (dt > 0) {
+          final sendBitrate = ((bytesSent - _prevBytesSent) * 8) / dt;
+          
+          // Calculate packet loss ratio
+          final totalPackets = packetsReceived + packetsLost;
+          final lossRatio = totalPackets > 0 ? packetsLost / totalPackets : 0.0;
+          final rtt = roundTripTime ?? 0.0;
+
+          // Decision logic
+          final isBad = lossRatio > 0.05 || rtt > 0.3 || sendBitrate < 100000;
+          final isGood = lossRatio < 0.01 && rtt < 0.15;
+
+          if (isBad) {
+            _consecutiveBadReports++;
+            _consecutiveGoodReports = 0;
+            // Degrade after 2 consecutive bad reports
+            if (_consecutiveBadReports >= 2 && _currentQualityLevel < 3) {
+              _currentQualityLevel++;
+              _consecutiveBadReports = 0;
+              await _applyQualityLevel(_currentQualityLevel);
+              debugPrint('📉 Video quality degraded to: ${_qualityLadder[_currentQualityLevel]['label']}');
+            }
+          } else if (isGood) {
+            _consecutiveGoodReports++;
+            _consecutiveBadReports = 0;
+            // Upgrade after 4 consecutive good reports
+            if (_consecutiveGoodReports >= 4 && _currentQualityLevel > 0) {
+              _currentQualityLevel--;
+              _consecutiveGoodReports = 0;
+              await _applyQualityLevel(_currentQualityLevel);
+              debugPrint('📈 Video quality upgraded to: ${_qualityLadder[_currentQualityLevel]['label']}');
+            }
+          } else {
+            // Neutral — reset counters slowly
+            if (_consecutiveBadReports > 0) _consecutiveBadReports--;
+            if (_consecutiveGoodReports > 0) _consecutiveGoodReports--;
+          }
+        }
+      }
+
+      _prevBytesSent = bytesSent;
+      _prevTimestamp = timestamp;
+    } catch (e) {
+      debugPrint('Quality monitor error: $e');
+    }
+  }
+
+  Future<void> _applyQualityLevel(int level) async {
+    if (_peerConnection == null) return;
+    final settings = _qualityLadder[level];
+    final maxBitrate = settings['maxBitrate'] as int;
+    final maxFramerate = settings['maxFramerate'] as int;
+
+    try {
+      final senders = await _peerConnection!.getSenders();
+      for (final sender in senders) {
+        if (sender.track?.kind == 'video') {
+          final params = sender.parameters;
+          if (params.encodings == null || params.encodings!.isEmpty) {
+            params.encodings = [RTCRtpEncoding()];
+          }
+          for (final encoding in params.encodings!) {
+            encoding.maxBitrate = maxBitrate;
+            encoding.maxFramerate = maxFramerate;
+          }
+          await sender.setParameters(params);
+        }
+      }
+    } catch (e) {
+      debugPrint('Apply quality error: $e');
+    }
+  }
+
   // ─── Create Peer Connection ─────────────────────────
 
   Future<RTCPeerConnection> _createPeerConnection() async {
@@ -122,6 +263,8 @@ class WebRTCService {
           _disconnectTimeout?.cancel();
           _disconnectTimeout = null;
           onCallStatusChanged?.call(CallStatus.active);
+          // Start adaptive quality monitoring
+          _startQualityMonitor();
           break;
         case RTCIceConnectionState.RTCIceConnectionStateFailed:
           _disconnectTimeout?.cancel();
@@ -333,6 +476,7 @@ class WebRTCService {
     _ringTimeout = null;
     _disconnectTimeout?.cancel();
     _disconnectTimeout = null;
+    _stopQualityMonitor();
 
     await _callSubscription?.cancel();
     _callSubscription = null;

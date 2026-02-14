@@ -1,19 +1,26 @@
+import 'dart:io';
+import 'dart:typed_data';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../../core/constants/constants.dart';
 
 /// Full-screen image viewer with zoom & pan.
+/// Supports: network URLs, base64 bytes, local file paths.
 class MediaViewerScreen extends StatefulWidget {
   const MediaViewerScreen({
     super.key,
-    required this.imageUrl,
+    this.imageUrl,
+    this.imageBytes,
     this.senderName,
     this.timestamp,
+    this.heroTag,
   });
 
-  final String imageUrl;
+  final String? imageUrl;
+  final Uint8List? imageBytes;
   final String? senderName;
   final DateTime? timestamp;
+  final String? heroTag;
 
   @override
   State<MediaViewerScreen> createState() => _MediaViewerScreenState();
@@ -51,6 +58,65 @@ class _MediaViewerScreenState extends State<MediaViewerScreen>
     }
   }
 
+  Widget _buildImage() {
+    // Priority 1: raw bytes (from base64 decode)
+    if (widget.imageBytes != null) {
+      return Image.memory(
+        widget.imageBytes!,
+        fit: BoxFit.contain,
+        errorBuilder: (_, __, ___) => _errorWidget(),
+      );
+    }
+
+    final url = widget.imageUrl;
+    if (url == null || url.isEmpty) return _errorWidget();
+
+    // Priority 2: local file path
+    if (url.startsWith('/') || url.startsWith('file:')) {
+      final file = File(url.replaceFirst('file://', ''));
+      return Image.file(
+        file,
+        fit: BoxFit.contain,
+        errorBuilder: (_, __, ___) => _errorWidget(),
+      );
+    }
+
+    // Priority 3: network URL
+    return Image.network(
+      url,
+      fit: BoxFit.contain,
+      loadingBuilder: (_, child, progress) {
+        if (progress == null) return child;
+        return Center(
+          child: CircularProgressIndicator(
+            value: progress.expectedTotalBytes != null
+                ? progress.cumulativeBytesLoaded /
+                    progress.expectedTotalBytes!
+                : null,
+            color: AppColors.accent,
+            strokeWidth: 2,
+          ),
+        );
+      },
+      errorBuilder: (_, __, ___) => _errorWidget(),
+    );
+  }
+
+  Widget _errorWidget() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.broken_image_rounded,
+            size: 64,
+            color: AppColors.textHint.withValues(alpha: 0.4)),
+        const SizedBox(height: 12),
+        Text('Не удалось загрузить',
+            style: TextStyle(
+                color: AppColors.textHint.withValues(alpha: 0.6))),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final timeStr = widget.timestamp != null
@@ -68,38 +134,7 @@ class _MediaViewerScreenState extends State<MediaViewerScreen>
               transformationController: _transformCtrl,
               minScale: 0.5,
               maxScale: 5.0,
-              child: Center(
-                child: Image.network(
-                  widget.imageUrl,
-                  fit: BoxFit.contain,
-                  loadingBuilder: (_, child, progress) {
-                    if (progress == null) return child;
-                    return Center(
-                      child: CircularProgressIndicator(
-                        value: progress.expectedTotalBytes != null
-                            ? progress.cumulativeBytesLoaded /
-                                progress.expectedTotalBytes!
-                            : null,
-                        color: AppColors.accent,
-                        strokeWidth: 2,
-                      ),
-                    );
-                  },
-                  errorBuilder: (_, __, ___) => Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.broken_image_rounded,
-                          size: 64,
-                          color: AppColors.textHint.withValues(alpha: 0.4)),
-                      const SizedBox(height: 12),
-                      Text('Не удалось загрузить',
-                          style: TextStyle(
-                              color: AppColors.textHint
-                                  .withValues(alpha: 0.6))),
-                    ],
-                  ),
-                ),
-              ),
+              child: Center(child: _buildImage()),
             ),
           ),
 

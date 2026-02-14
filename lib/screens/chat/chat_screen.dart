@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:video_player/video_player.dart';
 import '../../core/constants/constants.dart';
 import '../../models/message_model.dart';
 import '../../models/sticker_model.dart';
@@ -16,6 +17,7 @@ import '../../providers/providers.dart';
 import '../../widgets/widgets.dart';
 import '../call/call_screen.dart';
 import 'chat_info_screen.dart';
+import 'media_viewer_screen.dart';
 
 /// Chat screen between two users.
 class ChatScreen extends ConsumerStatefulWidget {
@@ -57,9 +59,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   // ─── Wallpaper ─────────────────────────
   int _wallpaperIndex = -1;
 
-  // ─── Jitter fix: track last doc count ──
+  // ─── Track message count for auto-scroll ──
   int _lastDocCount = 0;
-  bool _initialLoadDone = false;
 
   // ─── Sticker picker state ──────────────
   bool _showStickerPicker = false;
@@ -101,8 +102,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   void _onScroll() {
     if (!_scrollCtrl.hasClients) return;
-    final show = _scrollCtrl.position.pixels <
-        _scrollCtrl.position.maxScrollExtent - 300;
+    // reverse: true — pixels > 0 means user scrolled UP from bottom
+    final show = _scrollCtrl.position.pixels > 300;
     if (show != _showScrollFab) setState(() => _showScrollFab = show);
   }
 
@@ -412,16 +413,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     final file = _pendingFile;
     final fileSize = file != null ? await file.length() : 0;
 
-    // For images, encode as base64 data URL for inline display
+    // Store local file path for display (not base64 — avoids Firestore size limits)
     String? mediaUrl;
-    if (mediaType == 'image' && file != null) {
-      try {
-        final bytes = await file.readAsBytes();
-        if (bytes.length < 5 * 1024 * 1024) {
-          // Only encode if < 5MB
-          mediaUrl = 'data:image/jpeg;base64,${base64Encode(bytes)}';
-        }
-      } catch (_) {}
+    if (file != null) {
+      mediaUrl = file.path; // Local path — renders with Image.file()
     }
 
     final currentUser = ref.read(currentUserProvider);
@@ -1105,7 +1100,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     Future.delayed(const Duration(milliseconds: 50), () {
       if (_scrollCtrl.hasClients) {
         _scrollCtrl.animateTo(
-          _scrollCtrl.position.maxScrollExtent,
+          0, // reverse: true — 0 is the bottom (newest messages)
           duration: const Duration(milliseconds: 150),
           curve: Curves.easeOut,
         );
@@ -1349,7 +1344,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   .collection('chats')
                   .doc(_chatId)
                   .collection('messages')
-                  .orderBy('createdAt', descending: false)
+                  .orderBy('createdAt', descending: true)
                   .snapshots(),
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
@@ -1384,53 +1379,28 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   );
                 }
 
-                // ─── JITTER FIX ──────────────────────────
-                // Only scroll to bottom when new messages arrive
-                // (not on every stream rebuild / keyboard open)
+                // Mark messages as read when new ones arrive
                 final newCount = docs.length;
-                if (!_initialLoadDone) {
-                  // First load — scroll to bottom after layout completes
-                  _initialLoadDone = true;
+                if (newCount != _lastDocCount) {
                   _lastDocCount = newCount;
                   WidgetsBinding.instance.addPostFrameCallback((_) {
-                    if (_scrollCtrl.hasClients) {
-                      // Double-frame delay to ensure ListView has measured
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (_scrollCtrl.hasClients) {
-                          _scrollCtrl.jumpTo(
-                              _scrollCtrl.position.maxScrollExtent);
-                        }
-                      });
-                    }
                     _markRead();
                   });
-                } else if (newCount > _lastDocCount) {
-                  // New message(s) arrived
-                  _lastDocCount = newCount;
-                  // Only auto-scroll if user is near bottom
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    if (!_showScrollFab && _scrollCtrl.hasClients) {
-                      _scrollToBottom();
-                    }
-                    _markRead();
-                  });
-                } else {
-                  // Field-only changes (isRead, reaction, etc.)
-                  // Update the count but do NOT scroll
-                  _lastDocCount = newCount;
                 }
 
                 return Stack(
                   children: [
                     ListView.builder(
                       controller: _scrollCtrl,
+                      reverse: true, // ← KEY FIX: newest at bottom, anchored
                       padding: const EdgeInsets.symmetric(
                         horizontal: AppSizes.md,
                         vertical: AppSizes.sm,
                       ),
-                      // Use reverse:false with key to avoid jitter
                       itemCount: docs.length,
                       itemBuilder: (_, i) {
+                        // reverse: true means docs[0] is newest,
+                        // so we read from the end for chronological order
                         final msg = MessageModel.fromFirestore(docs[i]);
 
                         // Chat search filter
@@ -1443,21 +1413,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
                         final isMine = msg.senderId == _myUid;
 
-                        // Date separator
+                        // Date separator — since list is reversed,
+                        // "previous" message is at i+1
                         Widget? separator;
-                        if (i == 0 ||
+                        if (i == docs.length - 1 ||
                             _differentDay(
-                                MessageModel.fromFirestore(docs[i - 1])
+                                MessageModel.fromFirestore(docs[i + 1])
                                     .createdAt,
                                 msg.createdAt)) {
                           separator = _DateSeparator(date: msg.createdAt);
                         }
 
-                        return Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (separator != null) separator,
-                            GestureDetector(
+                        final bubble = GestureDetector(
                               onLongPress: () {
                                 if (_multiSelectMode) {
                                   _toggleMultiSelect(msg.id);
@@ -1508,7 +1475,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                                 ],
                               ),
                               ),
-                            ),
+                            );
+
+                        // Date separator comes ABOVE the message
+                        // In reverse list, we put bubble first then separator
+                        return Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            bubble,
+                            if (separator != null) separator,
                           ],
                         );
                       },
@@ -2474,6 +2449,130 @@ class _MessageBubbleState extends State<_MessageBubble> {
     return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
+  /// Decode a data:image/...;base64,... URL to bytes
+  static Uint8List? _decodeBase64Url(String dataUrl) {
+    try {
+      final commaIdx = dataUrl.indexOf(',');
+      if (commaIdx < 0) return null;
+      return base64Decode(dataUrl.substring(commaIdx + 1));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Build the right Image widget depending on the URL format
+  Widget _buildImageWidget(MessageModel msg) {
+    final url = msg.mediaUrl;
+
+    // Case 1: base64 data URL
+    if (url != null && url.startsWith('data:')) {
+      final bytes = _decodeBase64Url(url);
+      if (bytes != null) {
+        return Image.memory(
+          bytes,
+          width: double.infinity,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _imageErrorPlaceholder(),
+        );
+      }
+      return _imageErrorPlaceholder();
+    }
+
+    // Case 2: local file path
+    if (url != null && (url.startsWith('/') || url.startsWith('file:'))) {
+      final file = File(url.replaceFirst('file://', ''));
+      if (file.existsSync()) {
+        return Image.file(
+          file,
+          width: double.infinity,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _imageErrorPlaceholder(),
+        );
+      }
+      return _imageErrorPlaceholder();
+    }
+
+    // Case 3: HTTP/HTTPS URL
+    if (url != null && url.startsWith('http')) {
+      return Image.network(
+        url,
+        width: double.infinity,
+        fit: BoxFit.cover,
+        loadingBuilder: (_, child, progress) {
+          if (progress == null) return child;
+          return Container(
+            height: 180,
+            alignment: Alignment.center,
+            child: CircularProgressIndicator(
+              value: progress.expectedTotalBytes != null
+                  ? progress.cumulativeBytesLoaded /
+                      progress.expectedTotalBytes!
+                  : null,
+              strokeWidth: 2,
+              color: AppColors.accent,
+            ),
+          );
+        },
+        errorBuilder: (_, __, ___) => _imageErrorPlaceholder(),
+      );
+    }
+
+    // Fallback: no URL — show file name
+    return Container(
+      height: 120,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.image_rounded,
+              size: 28,
+              color: AppColors.accent.withValues(alpha: 0.7)),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              msg.mediaName ?? 'Фото',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 13,
+                color: isMine ? Colors.white : AppColors.textPrimary,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _imageErrorPlaceholder() {
+    return Container(
+      height: 120,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.broken_image_rounded,
+              size: 32,
+              color: AppColors.textHint.withValues(alpha: 0.4)),
+          const SizedBox(height: 4),
+          Text('Не удалось загрузить',
+              style: TextStyle(
+                fontSize: 12,
+                color: AppColors.textHint.withValues(alpha: 0.4),
+              )),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final timeStr = msg.createdAt != DateTime(0)
@@ -2618,81 +2717,30 @@ class _MessageBubbleState extends State<_MessageBubble> {
                 ]
                 // Image message — display inline
                 else if (msg.mediaType == 'image') ...[
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(10),
-                    child: msg.mediaUrl != null && msg.mediaUrl!.isNotEmpty
-                        ? Image.network(
-                            msg.mediaUrl!,
-                            width: double.infinity,
-                            fit: BoxFit.cover,
-                            loadingBuilder: (_, child, progress) {
-                              if (progress == null) return child;
-                              return Container(
-                                height: 180,
-                                alignment: Alignment.center,
-                                child: CircularProgressIndicator(
-                                  value: progress.expectedTotalBytes != null
-                                      ? progress.cumulativeBytesLoaded /
-                                          progress.expectedTotalBytes!
-                                      : null,
-                                  strokeWidth: 2,
-                                  color: AppColors.accent,
-                                ),
-                              );
-                            },
-                            errorBuilder: (_, __, ___) => Container(
-                              height: 120,
-                              alignment: Alignment.center,
-                              decoration: BoxDecoration(
-                                color: Colors.white.withValues(alpha: 0.06),
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(Icons.broken_image_rounded,
-                                      size: 32,
-                                      color: AppColors.textHint.withValues(alpha: 0.4)),
-                                  const SizedBox(height: 4),
-                                  Text('Не удалось загрузить',
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        color: AppColors.textHint.withValues(alpha: 0.4),
-                                      )),
-                                ],
-                              ),
-                            ),
-                          )
-                        : Container(
-                            height: 120,
-                            alignment: Alignment.center,
-                            decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: 0.06),
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.image_rounded,
-                                    size: 28,
-                                    color: AppColors.accent.withValues(alpha: 0.7)),
-                                const SizedBox(width: 8),
-                                Flexible(
-                                  child: Text(
-                                    msg.mediaName ?? 'Фото',
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                      fontSize: 13,
-                                      color: isMine
-                                          ? Colors.white
-                                          : AppColors.textPrimary,
-                                    ),
-                                  ),
-                                ),
-                              ],
+                  GestureDetector(
+                    onTap: () {
+                      // Open full-screen image viewer
+                      if (msg.mediaUrl != null && msg.mediaUrl!.isNotEmpty) {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => MediaViewerScreen(
+                              imageUrl: msg.mediaUrl!.startsWith('data:')
+                                  ? null
+                                  : msg.mediaUrl!,
+                              imageBytes: msg.mediaUrl!.startsWith('data:')
+                                  ? _decodeBase64Url(msg.mediaUrl!)
+                                  : null,
+                              heroTag: 'img_${msg.id}',
                             ),
                           ),
+                        );
+                      }
+                    },
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: _buildImageWidget(msg),
+                    ),
                   ),
                   if (msg.text.isNotEmpty &&
                       !msg.text.startsWith('📷') &&
@@ -2712,13 +2760,14 @@ class _MessageBubbleState extends State<_MessageBubble> {
                 else if (msg.mediaType == 'video') ...[
                   GestureDetector(
                     onTap: () {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: const Text('Воспроизведение видео скоро будет доступно'),
-                          backgroundColor: AppColors.accent.withValues(alpha: 0.9),
-                          behavior: SnackBarBehavior.floating,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                          duration: const Duration(seconds: 2),
+                      // Open video player screen
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => _VideoPlayerScreen(
+                            mediaUrl: msg.mediaUrl,
+                            mediaName: msg.mediaName ?? 'Видео',
+                          ),
                         ),
                       );
                     },
@@ -3052,6 +3101,204 @@ class _MessageBubbleState extends State<_MessageBubble> {
           ),
         ),
       ),
+    );
+  }
+}
+
+// ─── Video Player Screen ─────────────────────────────────
+
+class _VideoPlayerScreen extends StatefulWidget {
+  const _VideoPlayerScreen({
+    required this.mediaUrl,
+    required this.mediaName,
+  });
+
+  final String? mediaUrl;
+  final String mediaName;
+
+  @override
+  State<_VideoPlayerScreen> createState() => _VideoPlayerScreenState();
+}
+
+class _VideoPlayerScreenState extends State<_VideoPlayerScreen> {
+  late VideoPlayerController _controller;
+  bool _initialized = false;
+  bool _hasError = false;
+  bool _showControls = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _initPlayer();
+  }
+
+  Future<void> _initPlayer() async {
+    try {
+      final url = widget.mediaUrl;
+      if (url != null && (url.startsWith('/') || url.startsWith('file:'))) {
+        final path = url.replaceFirst('file://', '');
+        _controller = VideoPlayerController.file(File(path));
+      } else if (url != null && url.startsWith('http')) {
+        _controller = VideoPlayerController.networkUrl(Uri.parse(url));
+      } else {
+        setState(() => _hasError = true);
+        return;
+      }
+
+      await _controller.initialize();
+      _controller.addListener(() {
+        if (mounted) setState(() {});
+      });
+      if (mounted) {
+        setState(() => _initialized = true);
+        _controller.play();
+      }
+    } catch (e) {
+      if (mounted) setState(() => _hasError = true);
+    }
+  }
+
+  @override
+  void dispose() {
+    if (_initialized) _controller.dispose();
+    super.dispose();
+  }
+
+  String _formatDuration(Duration d) {
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_ios_rounded,
+              color: Colors.white, size: 20),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: Text(
+          widget.mediaName,
+          style: const TextStyle(color: Colors.white, fontSize: 16),
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+      body: _hasError
+          ? Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.error_outline_rounded,
+                      size: 48,
+                      color: AppColors.textHint.withValues(alpha: 0.5)),
+                  const SizedBox(height: 12),
+                  Text('Не удалось воспроизвести видео',
+                      style: TextStyle(
+                          color: AppColors.textHint.withValues(alpha: 0.6),
+                          fontSize: 15)),
+                ],
+              ),
+            )
+          : !_initialized
+              ? const Center(
+                  child: CircularProgressIndicator(
+                    color: AppColors.accent,
+                    strokeWidth: 2,
+                  ),
+                )
+              : GestureDetector(
+                  onTap: () =>
+                      setState(() => _showControls = !_showControls),
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      Center(
+                        child: AspectRatio(
+                          aspectRatio: _controller.value.aspectRatio,
+                          child: VideoPlayer(_controller),
+                        ),
+                      ),
+                      // Play/Pause overlay
+                      if (_showControls) ...[
+                        GestureDetector(
+                          onTap: () {
+                            if (_controller.value.isPlaying) {
+                              _controller.pause();
+                            } else {
+                              _controller.play();
+                            }
+                          },
+                          child: Container(
+                            width: 64,
+                            height: 64,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Colors.black.withValues(alpha: 0.5),
+                            ),
+                            child: Icon(
+                              _controller.value.isPlaying
+                                  ? Icons.pause_rounded
+                                  : Icons.play_arrow_rounded,
+                              size: 36,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                        // Progress bar
+                        Positioned(
+                          bottom: 20,
+                          left: 16,
+                          right: 16,
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              VideoProgressIndicator(
+                                _controller,
+                                allowScrubbing: true,
+                                colors: VideoProgressColors(
+                                  playedColor: AppColors.accent,
+                                  bufferedColor:
+                                      AppColors.accent.withValues(alpha: 0.3),
+                                  backgroundColor:
+                                      Colors.white.withValues(alpha: 0.15),
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    _formatDuration(
+                                        _controller.value.position),
+                                    style: TextStyle(
+                                      color: Colors.white
+                                          .withValues(alpha: 0.7),
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                  Text(
+                                    _formatDuration(
+                                        _controller.value.duration),
+                                    style: TextStyle(
+                                      color: Colors.white
+                                          .withValues(alpha: 0.7),
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
     );
   }
 }

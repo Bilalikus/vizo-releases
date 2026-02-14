@@ -1,7 +1,7 @@
 name: vizo
 description: "Vizo — Encrypted Calling App"
 publish_to: 'none'
-version: 1.6.0+7
+version: 1.7.0+8
 
 environment:
   sdk: ^3.7.0
@@ -55,6 +55,9 @@ dependencies:
 
   # Audio playback
   audioplayers: ^6.1.0
+
+  # Video playback
+  video_player: ^2.9.2
 
 dev_dependencies:
   flutter_test:
