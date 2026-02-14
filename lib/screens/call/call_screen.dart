@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:ui';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
@@ -47,6 +48,7 @@ class _CallScreenState extends ConsumerState<CallScreen>
   bool _renderersInitialized = false;
 
   late final AnimationController _pulseCtrl;
+  final AudioPlayer _ringtonePlayer = AudioPlayer();
 
   @override
   void initState() {
@@ -62,6 +64,27 @@ class _CallScreenState extends ConsumerState<CallScreen>
     _initRenderers();
   }
 
+  /// Play a repeating ringtone tone during ringing/connecting
+  Future<void> _startRingtone() async {
+    try {
+      await _ringtonePlayer.setReleaseMode(ReleaseMode.loop);
+      // Use a system-like tone pattern via ToneGenerator-style asset
+      // We'll generate a simple tone by playing a short beep URL
+      await _ringtonePlayer.play(
+        UrlSource('https://www.soundjay.com/phone/phone-calling-1.mp3'),
+        volume: 0.5,
+      );
+    } catch (e) {
+      debugPrint('Ringtone play error: $e');
+    }
+  }
+
+  Future<void> _stopRingtone() async {
+    try {
+      await _ringtonePlayer.stop();
+    } catch (_) {}
+  }
+
   Future<void> _initRenderers() async {
     await _localRenderer.initialize();
     await _remoteRenderer.initialize();
@@ -73,6 +96,7 @@ class _CallScreenState extends ConsumerState<CallScreen>
   void dispose() {
     _callTimer?.cancel();
     _pulseCtrl.dispose();
+    _ringtonePlayer.dispose();
     _localRenderer.dispose();
     _remoteRenderer.dispose();
     super.dispose();
@@ -101,10 +125,17 @@ class _CallScreenState extends ConsumerState<CallScreen>
       if (!mounted) return;
       setState(() => _status = status);
 
+      if (status == CallStatus.ringing || status == CallStatus.connecting) {
+        _startRingtone();
+      }
       if (status == CallStatus.active) {
+        _stopRingtone();
         _startTimer();
       }
-      if (status == CallStatus.ended) {
+      if (status == CallStatus.ended ||
+          status == CallStatus.declined ||
+          status == CallStatus.missed) {
+        _stopRingtone();
         _safePop();
       }
     };
@@ -173,6 +204,7 @@ class _CallScreenState extends ConsumerState<CallScreen>
   }
 
   Future<void> _endCall() async {
+    await _stopRingtone();
     final webrtc = ref.read(webrtcServiceProvider);
     await webrtc.endCall();
     _safePop();

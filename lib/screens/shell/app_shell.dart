@@ -145,6 +145,19 @@ class _UpdateBannerState extends State<_UpdateBanner> {
   double _progress = 0;
   String _statusText = '';
 
+  /// Compare two semantic versions. Returns true if [remote] > [local].
+  static bool _isNewerVersion(String remote, String local) {
+    final rParts = remote.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+    final lParts = local.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+    for (int i = 0; i < 3; i++) {
+      final r = i < rParts.length ? rParts[i] : 0;
+      final l = i < lParts.length ? lParts[i] : 0;
+      if (r > l) return true;
+      if (r < l) return false;
+    }
+    return false; // equal
+  }
+
   /// Extract Google Drive file ID from any GDrive URL format.
   String? _extractGDriveId(String url) {
     // /file/d/ID/...
@@ -487,7 +500,8 @@ open "\$DEST"
             ? (data?['apkUrl'] as String? ?? '')
             : (data?['dmgUrl'] as String? ?? '');
 
-        if (latestVersion == _appVersion || updateUrl.isEmpty) {
+        // Compare versions properly — only show banner when remote > local
+        if (updateUrl.isEmpty || !_isNewerVersion(latestVersion, _appVersion)) {
           return const SizedBox.shrink();
         }
 

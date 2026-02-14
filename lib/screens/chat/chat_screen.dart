@@ -1,10 +1,13 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'dart:ui';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/constants/constants.dart';
 import '../../models/message_model.dart';
@@ -71,6 +74,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   Timer? _recordTimer;
   int _recordSeconds = 0;
   bool _hasText = false;
+
+  // ─── Pending attachment state ──────────
+  File? _pendingFile;
+  String? _pendingFileName;
+  String? _pendingMediaType; // 'image', 'video', 'file'
 
   @override
   void initState() {
@@ -270,59 +278,114 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   // ─── Attach File ──────────────────────
 
   Future<void> _attachFile() async {
+    // Show bottom sheet with options: photo, video, file
+    if (!mounted) return;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => ClipRRect(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30),
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.08),
+              borderRadius:
+                  const BorderRadius.vertical(top: Radius.circular(20)),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 36, height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _ActionTile(
+                  icon: Icons.photo_rounded,
+                  label: 'Фото из галереи',
+                  onTap: () => Navigator.pop(context, 'photo'),
+                ),
+                _ActionTile(
+                  icon: Icons.camera_alt_rounded,
+                  label: 'Сделать фото',
+                  onTap: () => Navigator.pop(context, 'camera'),
+                ),
+                _ActionTile(
+                  icon: Icons.videocam_rounded,
+                  label: 'Видео',
+                  onTap: () => Navigator.pop(context, 'video'),
+                ),
+                _ActionTile(
+                  icon: Icons.insert_drive_file_rounded,
+                  label: 'Файл',
+                  onTap: () => Navigator.pop(context, 'file'),
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (choice == null) return;
+
     try {
-      final result = await FilePicker.platform.pickFiles(
-        allowMultiple: false,
-        withData: false,
-        withReadStream: false,
-      );
-      if (result == null || result.files.isEmpty) return;
-
-      final file = result.files.first;
-      final fileName = file.name;
-      final fileSize = file.size;
-
-      final currentUser = ref.read(currentUserProvider);
-      final senderName = currentUser.displayName.isNotEmpty
-          ? currentUser.displayName
-          : currentUser.phoneNumber;
-
-      // Format size
-      String sizeStr;
-      if (fileSize < 1024) {
-        sizeStr = '$fileSize B';
-      } else if (fileSize < 1024 * 1024) {
-        sizeStr = '${(fileSize / 1024).toStringAsFixed(1)} KB';
-      } else {
-        sizeStr = '${(fileSize / (1024 * 1024)).toStringAsFixed(1)} MB';
+      switch (choice) {
+        case 'photo':
+          final picked = await ImagePicker().pickImage(
+            source: ImageSource.gallery,
+            imageQuality: 80,
+          );
+          if (picked == null) return;
+          setState(() {
+            _pendingFile = File(picked.path);
+            _pendingFileName = picked.name;
+            _pendingMediaType = 'image';
+          });
+          break;
+        case 'camera':
+          final picked = await ImagePicker().pickImage(
+            source: ImageSource.camera,
+            imageQuality: 80,
+          );
+          if (picked == null) return;
+          setState(() {
+            _pendingFile = File(picked.path);
+            _pendingFileName = picked.name;
+            _pendingMediaType = 'image';
+          });
+          break;
+        case 'video':
+          final picked = await ImagePicker().pickVideo(
+            source: ImageSource.gallery,
+          );
+          if (picked == null) return;
+          setState(() {
+            _pendingFile = File(picked.path);
+            _pendingFileName = picked.name;
+            _pendingMediaType = 'video';
+          });
+          break;
+        case 'file':
+          final result = await FilePicker.platform.pickFiles(
+            allowMultiple: false,
+            withData: false,
+            withReadStream: false,
+          );
+          if (result == null || result.files.isEmpty) return;
+          final f = result.files.first;
+          setState(() {
+            _pendingFile = f.path != null ? File(f.path!) : null;
+            _pendingFileName = f.name;
+            _pendingMediaType = 'file';
+          });
+          break;
       }
-
-      await _db.collection('chats').doc(_chatId).set({
-        'participants': [_myUid, widget.peerId],
-        'lastMessage': '📎 $fileName',
-        'lastMessageAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
-
-      await _db
-          .collection('chats')
-          .doc(_chatId)
-          .collection('messages')
-          .add({
-        'chatId': _chatId,
-        'senderId': _myUid,
-        'senderName': senderName,
-        'text': '📎 $fileName ($sizeStr)',
-        'mediaType': 'file',
-        'mediaName': fileName,
-        'mediaSize': fileSize,
-        'createdAt': FieldValue.serverTimestamp(),
-        'isRead': false,
-        'isEdited': false,
-        'isDeleted': false,
-      });
-
-      _scrollToBottom();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -330,6 +393,98 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         );
       }
     }
+  }
+
+  void _cancelPendingFile() {
+    setState(() {
+      _pendingFile = null;
+      _pendingFileName = null;
+      _pendingMediaType = null;
+    });
+  }
+
+  Future<void> _sendPendingFile() async {
+    if (_pendingFile == null && _pendingFileName == null) return;
+
+    final caption = _msgCtrl.text.trim();
+    final mediaType = _pendingMediaType ?? 'file';
+    final fileName = _pendingFileName ?? 'file';
+    final file = _pendingFile;
+    final fileSize = file != null ? await file.length() : 0;
+
+    // For images, encode as base64 data URL for inline display
+    String? mediaUrl;
+    if (mediaType == 'image' && file != null) {
+      try {
+        final bytes = await file.readAsBytes();
+        if (bytes.length < 5 * 1024 * 1024) {
+          // Only encode if < 5MB
+          mediaUrl = 'data:image/jpeg;base64,${base64Encode(bytes)}';
+        }
+      } catch (_) {}
+    }
+
+    final currentUser = ref.read(currentUserProvider);
+    final senderName = currentUser.displayName.isNotEmpty
+        ? currentUser.displayName
+        : currentUser.phoneNumber;
+
+    // Format size
+    String sizeStr;
+    if (fileSize < 1024) {
+      sizeStr = '$fileSize B';
+    } else if (fileSize < 1024 * 1024) {
+      sizeStr = '${(fileSize / 1024).toStringAsFixed(1)} KB';
+    } else {
+      sizeStr = '${(fileSize / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+
+    final icon = mediaType == 'image'
+        ? '📷'
+        : mediaType == 'video'
+            ? '🎬'
+            : '📎';
+    final lastMsg = caption.isNotEmpty ? '$icon $caption' : '$icon $fileName';
+
+    await _db.collection('chats').doc(_chatId).set({
+      'participants': [_myUid, widget.peerId],
+      'lastMessage': lastMsg,
+      'lastMessageAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    final msgData = <String, dynamic>{
+      'chatId': _chatId,
+      'senderId': _myUid,
+      'senderName': senderName,
+      'text': caption.isNotEmpty ? caption : '$icon $fileName ($sizeStr)',
+      'mediaType': mediaType,
+      'mediaName': fileName,
+      'mediaSize': fileSize,
+      'createdAt': FieldValue.serverTimestamp(),
+      'isRead': false,
+      'isEdited': false,
+      'isDeleted': false,
+    };
+
+    if (mediaUrl != null) {
+      msgData['mediaUrl'] = mediaUrl;
+    }
+
+    await _db
+        .collection('chats')
+        .doc(_chatId)
+        .collection('messages')
+        .add(msgData);
+
+    _msgCtrl.clear();
+    setState(() {
+      _pendingFile = null;
+      _pendingFileName = null;
+      _pendingMediaType = null;
+      _hasText = false;
+    });
+    _scrollToBottom();
   }
 
   // ─── Voice recording ──────────────────
@@ -1234,13 +1389,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                 // (not on every stream rebuild / keyboard open)
                 final newCount = docs.length;
                 if (!_initialLoadDone) {
-                  // First load — scroll to bottom once
+                  // First load — scroll to bottom after layout completes
                   _initialLoadDone = true;
                   _lastDocCount = newCount;
                   WidgetsBinding.instance.addPostFrameCallback((_) {
                     if (_scrollCtrl.hasClients) {
-                      _scrollCtrl.jumpTo(
-                          _scrollCtrl.position.maxScrollExtent);
+                      // Double-frame delay to ensure ListView has measured
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (_scrollCtrl.hasClients) {
+                          _scrollCtrl.jumpTo(
+                              _scrollCtrl.position.maxScrollExtent);
+                        }
+                      });
                     }
                     _markRead();
                   });
@@ -1249,14 +1409,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   _lastDocCount = newCount;
                   // Only auto-scroll if user is near bottom
                   WidgetsBinding.instance.addPostFrameCallback((_) {
-                    if (!_showScrollFab) {
+                    if (!_showScrollFab && _scrollCtrl.hasClients) {
                       _scrollToBottom();
                     }
                     _markRead();
                   });
+                } else {
+                  // Field-only changes (isRead, reaction, etc.)
+                  // Update the count but do NOT scroll
+                  _lastDocCount = newCount;
                 }
-                // On isRead updates or other field changes,
-                // do NOT scroll — prevents jitter
 
                 return Stack(
                   children: [
@@ -1399,6 +1561,90 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               text: _editingMsg!.text,
               onCancel: _cancelEdit,
               accentColor: AppColors.warning,
+            ),
+
+          // ─── Pending File Preview ──────
+          if (_pendingFile != null || _pendingFileName != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: AppColors.accent.withValues(alpha: 0.08),
+                border: Border(
+                  left: const BorderSide(color: AppColors.accent, width: 3),
+                  top: BorderSide(
+                    color: Colors.white.withValues(alpha: 0.05),
+                    width: 0.5,
+                  ),
+                ),
+              ),
+              child: Row(
+                children: [
+                  // Thumbnail for images
+                  if (_pendingMediaType == 'image' && _pendingFile != null)
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.file(
+                        _pendingFile!,
+                        width: 48,
+                        height: 48,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => Container(
+                          width: 48, height: 48,
+                          color: Colors.white.withValues(alpha: 0.06),
+                          child: const Icon(Icons.image_rounded,
+                              color: AppColors.accent, size: 24),
+                        ),
+                      ),
+                    )
+                  else
+                    Icon(
+                      _pendingMediaType == 'video'
+                          ? Icons.videocam_rounded
+                          : Icons.insert_drive_file_rounded,
+                      size: 28,
+                      color: AppColors.accent.withValues(alpha: 0.8),
+                    ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          _pendingMediaType == 'image'
+                              ? 'Фото'
+                              : _pendingMediaType == 'video'
+                                  ? 'Видео'
+                                  : 'Файл',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.accent,
+                          ),
+                        ),
+                        Text(
+                          _pendingFileName ?? '',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: AppColors.textSecondary
+                                .withValues(alpha: 0.7),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: _cancelPendingFile,
+                    child: Icon(
+                      Icons.close_rounded,
+                      size: 18,
+                      color: AppColors.textHint.withValues(alpha: 0.6),
+                    ),
+                  ),
+                ],
+              ),
             ),
 
           // ─── Input ─────────────────────
@@ -1568,9 +1814,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                     ),
                     const SizedBox(width: AppSizes.sm),
                     // Send or Mic button
-                    if (_hasText || _editingMsg != null)
+                    if (_hasText || _editingMsg != null || _pendingFile != null)
                       GestureDetector(
-                        onTap: _send,
+                        onTap: _pendingFile != null
+                            ? _sendPendingFile
+                            : _send,
                         child: Container(
                           width: 42,
                           height: 42,
@@ -2156,7 +2404,7 @@ class _DateSeparator extends StatelessWidget {
 
 // ─── Message Bubble ──────────────────────────────────────
 
-class _MessageBubble extends StatelessWidget {
+class _MessageBubble extends StatefulWidget {
   const _MessageBubble({
     required this.msg,
     required this.isMine,
@@ -2164,6 +2412,51 @@ class _MessageBubble extends StatelessWidget {
 
   final MessageModel msg;
   final bool isMine;
+
+  @override
+  State<_MessageBubble> createState() => _MessageBubbleState();
+}
+
+class _MessageBubbleState extends State<_MessageBubble> {
+  bool _isPlayingVoice = false;
+  Timer? _voiceTimer;
+  int _voiceProgress = 0;
+
+  MessageModel get msg => widget.msg;
+  bool get isMine => widget.isMine;
+
+  @override
+  void dispose() {
+    _voiceTimer?.cancel();
+    super.dispose();
+  }
+
+  void _toggleVoicePlay() {
+    if (_isPlayingVoice) {
+      _voiceTimer?.cancel();
+      setState(() {
+        _isPlayingVoice = false;
+        _voiceProgress = 0;
+      });
+    } else {
+      final totalSec = msg.mediaSize ?? 5;
+      setState(() {
+        _isPlayingVoice = true;
+        _voiceProgress = 0;
+      });
+      _voiceTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+        if (!mounted) { timer.cancel(); return; }
+        setState(() => _voiceProgress++);
+        if (_voiceProgress >= totalSec) {
+          timer.cancel();
+          setState(() {
+            _isPlayingVoice = false;
+            _voiceProgress = 0;
+          });
+        }
+      });
+    }
+  }
 
   static final _urlRegex = RegExp(
     r'https?://[^\s]+',
@@ -2323,6 +2616,180 @@ class _MessageBubble extends StatelessWidget {
                         style: const TextStyle(fontSize: 56)),
                   ),
                 ]
+                // Image message — display inline
+                else if (msg.mediaType == 'image') ...[
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: msg.mediaUrl != null && msg.mediaUrl!.isNotEmpty
+                        ? Image.network(
+                            msg.mediaUrl!,
+                            width: double.infinity,
+                            fit: BoxFit.cover,
+                            loadingBuilder: (_, child, progress) {
+                              if (progress == null) return child;
+                              return Container(
+                                height: 180,
+                                alignment: Alignment.center,
+                                child: CircularProgressIndicator(
+                                  value: progress.expectedTotalBytes != null
+                                      ? progress.cumulativeBytesLoaded /
+                                          progress.expectedTotalBytes!
+                                      : null,
+                                  strokeWidth: 2,
+                                  color: AppColors.accent,
+                                ),
+                              );
+                            },
+                            errorBuilder: (_, __, ___) => Container(
+                              height: 120,
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.06),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.broken_image_rounded,
+                                      size: 32,
+                                      color: AppColors.textHint.withValues(alpha: 0.4)),
+                                  const SizedBox(height: 4),
+                                  Text('Не удалось загрузить',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: AppColors.textHint.withValues(alpha: 0.4),
+                                      )),
+                                ],
+                              ),
+                            ),
+                          )
+                        : Container(
+                            height: 120,
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.06),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.image_rounded,
+                                    size: 28,
+                                    color: AppColors.accent.withValues(alpha: 0.7)),
+                                const SizedBox(width: 8),
+                                Flexible(
+                                  child: Text(
+                                    msg.mediaName ?? 'Фото',
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      color: isMine
+                                          ? Colors.white
+                                          : AppColors.textPrimary,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                  ),
+                  if (msg.text.isNotEmpty &&
+                      !msg.text.startsWith('📷') &&
+                      !msg.text.startsWith('🖼'))
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                        msg.text,
+                        style: TextStyle(
+                          color: isMine ? Colors.white : AppColors.textPrimary,
+                          fontSize: 15,
+                        ),
+                      ),
+                    ),
+                ]
+                // Video message — display with play overlay
+                else if (msg.mediaType == 'video') ...[
+                  GestureDetector(
+                    onTap: () {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: const Text('Воспроизведение видео скоро будет доступно'),
+                          backgroundColor: AppColors.accent.withValues(alpha: 0.9),
+                          behavior: SnackBarBehavior.floating,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          duration: const Duration(seconds: 2),
+                        ),
+                      );
+                    },
+                    child: Container(
+                      height: 180,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.06),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.08),
+                        ),
+                      ),
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          // Video thumbnail placeholder
+                          Center(
+                            child: Icon(Icons.videocam_rounded,
+                                size: 40,
+                                color: AppColors.textHint.withValues(alpha: 0.3)),
+                          ),
+                          // Play overlay
+                          Container(
+                            width: 56,
+                            height: 56,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Colors.black.withValues(alpha: 0.5),
+                              border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.3),
+                                width: 1.5,
+                              ),
+                            ),
+                            child: const Icon(Icons.play_arrow_rounded,
+                                size: 32, color: Colors.white),
+                          ),
+                          // File name at bottom
+                          Positioned(
+                            bottom: 8,
+                            left: 8,
+                            right: 8,
+                            child: Text(
+                              msg.mediaName ?? 'Видео',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: isMine
+                                    ? Colors.white.withValues(alpha: 0.7)
+                                    : AppColors.textHint.withValues(alpha: 0.7),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  if (msg.text.isNotEmpty &&
+                      !msg.text.startsWith('🎬') &&
+                      !msg.text.startsWith('📹'))
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                        msg.text,
+                        style: TextStyle(
+                          color: isMine ? Colors.white : AppColors.textPrimary,
+                          fontSize: 15,
+                        ),
+                      ),
+                    ),
+                ]
                 // File message
                 else if (msg.mediaType == 'file') ...[
                   Container(
@@ -2378,7 +2845,9 @@ class _MessageBubble extends StatelessWidget {
                 ]
                 // Voice message
                 else if (msg.mediaType == 'voice') ...[
-                  Container(
+                  GestureDetector(
+                    onTap: _toggleVoicePlay,
+                    child: Container(
                     padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
                       color: Colors.white.withValues(alpha: 0.06),
@@ -2399,32 +2868,44 @@ class _MessageBubble extends StatelessWidget {
                                 ? Colors.white.withValues(alpha: 0.15)
                                 : AppColors.accent.withValues(alpha: 0.15),
                           ),
-                          child: Icon(Icons.play_arrow_rounded,
+                          child: Icon(
+                              _isPlayingVoice
+                                  ? Icons.pause_rounded
+                                  : Icons.play_arrow_rounded,
                               size: 22,
                               color: isMine
                                   ? Colors.white
                                   : AppColors.accent),
                         ),
                         const SizedBox(width: 10),
-                        // Waveform placeholder
+                        // Waveform with progress
                         Flexible(
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              // Simulated waveform bars
+                              // Simulated waveform bars with playback progress
                               Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: List.generate(16, (i) {
                                   final h = 4.0 + (i * 7 % 13).toDouble();
+                                  final totalSec = msg.mediaSize ?? 5;
+                                  final progress = totalSec > 0
+                                      ? _voiceProgress / totalSec
+                                      : 0.0;
+                                  final played = i / 16 < progress;
                                   return Container(
                                     width: 3,
                                     height: h,
                                     margin: const EdgeInsets.symmetric(horizontal: 1),
                                     decoration: BoxDecoration(
-                                      color: isMine
-                                          ? Colors.white.withValues(alpha: 0.5)
-                                          : AppColors.accent.withValues(alpha: 0.5),
+                                      color: played
+                                          ? (isMine
+                                              ? Colors.white.withValues(alpha: 0.9)
+                                              : AppColors.accent.withValues(alpha: 0.9))
+                                          : (isMine
+                                              ? Colors.white.withValues(alpha: 0.3)
+                                              : AppColors.accent.withValues(alpha: 0.3)),
                                       borderRadius: BorderRadius.circular(2),
                                     ),
                                   );
@@ -2432,9 +2913,11 @@ class _MessageBubble extends StatelessWidget {
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                msg.mediaSize != null
-                                    ? '${(msg.mediaSize! ~/ 60).toString().padLeft(2, '0')}:${(msg.mediaSize! % 60).toString().padLeft(2, '0')}'
-                                    : '0:00',
+                                _isPlayingVoice
+                                    ? '${(_voiceProgress ~/ 60).toString().padLeft(2, '0')}:${(_voiceProgress % 60).toString().padLeft(2, '0')}'
+                                    : (msg.mediaSize != null
+                                        ? '${(msg.mediaSize! ~/ 60).toString().padLeft(2, '0')}:${(msg.mediaSize! % 60).toString().padLeft(2, '0')}'
+                                        : '0:00'),
                                 style: TextStyle(
                                   fontSize: 11,
                                   color: isMine
@@ -2447,6 +2930,7 @@ class _MessageBubble extends StatelessWidget {
                         ),
                       ],
                     ),
+                  ),
                   ),
                 ]
                 // Normal message with possible link preview

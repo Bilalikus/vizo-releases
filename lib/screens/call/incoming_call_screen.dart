@@ -1,3 +1,4 @@
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/constants/constants.dart';
@@ -19,6 +20,7 @@ class _IncomingCallScreenState extends ConsumerState<IncomingCallScreen>
     with SingleTickerProviderStateMixin {
   late final AnimationController _pulseCtrl;
   late final Animation<double> _pulse;
+  final AudioPlayer _ringtonePlayer = AudioPlayer();
 
   @override
   void initState() {
@@ -30,15 +32,36 @@ class _IncomingCallScreenState extends ConsumerState<IncomingCallScreen>
     _pulse = Tween(begin: 0.95, end: 1.05).animate(
       CurvedAnimation(parent: _pulseCtrl, curve: Curves.easeInOut),
     );
+    _playRingtone();
+  }
+
+  Future<void> _playRingtone() async {
+    try {
+      await _ringtonePlayer.setReleaseMode(ReleaseMode.loop);
+      await _ringtonePlayer.play(
+        UrlSource('https://www.soundjay.com/phone/phone-calling-1.mp3'),
+        volume: 0.7,
+      );
+    } catch (e) {
+      debugPrint('Ringtone error: $e');
+    }
+  }
+
+  Future<void> _stopRingtone() async {
+    try {
+      await _ringtonePlayer.stop();
+    } catch (_) {}
   }
 
   @override
   void dispose() {
+    _ringtonePlayer.dispose();
     _pulseCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _accept() async {
+    await _stopRingtone();
     final authService = ref.read(authServiceProvider);
     final currentUser = ref.read(currentUserProvider);
 
@@ -62,6 +85,7 @@ class _IncomingCallScreenState extends ConsumerState<IncomingCallScreen>
   bool get _isVideo => widget.call.isVideoCall;
 
   Future<void> _decline() async {
+    await _stopRingtone();
     final webrtc = ref.read(webrtcServiceProvider);
     await webrtc.declineCall(widget.call.id);
     if (mounted) Navigator.pop(context);

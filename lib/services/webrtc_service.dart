@@ -21,6 +21,7 @@ class WebRTCService {
   StreamSubscription? _callSubscription;
   StreamSubscription? _candidatesSubscription;
   Timer? _ringTimeout;
+  Timer? _disconnectTimeout;
 
   String? _currentCallId;
   bool _isCaller = false;
@@ -117,14 +118,27 @@ class WebRTCService {
       switch (state) {
         case RTCIceConnectionState.RTCIceConnectionStateConnected:
         case RTCIceConnectionState.RTCIceConnectionStateCompleted:
+          // Cancel any pending disconnect timeout
+          _disconnectTimeout?.cancel();
+          _disconnectTimeout = null;
           onCallStatusChanged?.call(CallStatus.active);
           break;
         case RTCIceConnectionState.RTCIceConnectionStateFailed:
-          onCallStatusChanged?.call(CallStatus.ended);
+          _disconnectTimeout?.cancel();
+          _disconnectTimeout = null;
+          endCall();
           break;
         case RTCIceConnectionState.RTCIceConnectionStateDisconnected:
+          // Peer may have exited — wait 5s then auto-end
+          _disconnectTimeout?.cancel();
+          _disconnectTimeout = Timer(const Duration(seconds: 5), () {
+            debugPrint('ICE disconnected for 5s — ending call');
+            endCall();
+          });
           break;
         case RTCIceConnectionState.RTCIceConnectionStateClosed:
+          _disconnectTimeout?.cancel();
+          _disconnectTimeout = null;
           break;
         default:
           break;
@@ -317,6 +331,8 @@ class WebRTCService {
 
     _ringTimeout?.cancel();
     _ringTimeout = null;
+    _disconnectTimeout?.cancel();
+    _disconnectTimeout = null;
 
     await _callSubscription?.cancel();
     _callSubscription = null;
@@ -407,10 +423,21 @@ class WebRTCService {
       MediaStream screenStream;
 
       if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
+        // On desktop, use getDisplayMedia with explicit constraints
+        // and handle potential permission issues
         screenStream = await navigator.mediaDevices.getDisplayMedia({
-          'video': true,
+          'video': {
+            'cursor': 'always',
+          },
           'audio': false,
         });
+
+        // Verify we got a valid video track
+        if (screenStream.getVideoTracks().isEmpty) {
+          debugPrint('Screen share: no video tracks returned');
+          screenStream.dispose();
+          return false;
+        }
       } else {
         screenStream = await navigator.mediaDevices.getDisplayMedia({
           'video': {'deviceId': 'broadcast'},
