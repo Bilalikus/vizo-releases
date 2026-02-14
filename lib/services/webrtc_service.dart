@@ -67,11 +67,28 @@ class WebRTCService {
       {'urls': 'stun:stun2.l.google.com:19302'},
       {'urls': 'stun:stun3.l.google.com:19302'},
       {'urls': 'stun:stun4.l.google.com:19302'},
+      // Metered.ca free TURN (primary)
       {
-        'urls': 'turn:openrelay.metered.ca:80',
-        'username': 'openrelayproject',
-        'credential': 'openrelayproject',
+        'urls': 'turn:a.relay.metered.ca:80',
+        'username': 'e8dd65b092cdd4e7e5aeafd2',
+        'credential': '3lp5sPqiZG/chGY+',
       },
+      {
+        'urls': 'turn:a.relay.metered.ca:80?transport=tcp',
+        'username': 'e8dd65b092cdd4e7e5aeafd2',
+        'credential': '3lp5sPqiZG/chGY+',
+      },
+      {
+        'urls': 'turn:a.relay.metered.ca:443',
+        'username': 'e8dd65b092cdd4e7e5aeafd2',
+        'credential': '3lp5sPqiZG/chGY+',
+      },
+      {
+        'urls': 'turns:a.relay.metered.ca:443?transport=tcp',
+        'username': 'e8dd65b092cdd4e7e5aeafd2',
+        'credential': '3lp5sPqiZG/chGY+',
+      },
+      // Backup: openrelay
       {
         'urls': 'turn:openrelay.metered.ca:443',
         'username': 'openrelayproject',
@@ -83,6 +100,7 @@ class WebRTCService {
         'credential': 'openrelayproject',
       },
     ],
+    'iceCandidatePoolSize': 10,
   };
 
   // ─── Initialize Media ──────────────────────────────
@@ -354,6 +372,8 @@ class WebRTCService {
       }
     });
 
+    bool answerSet = false;
+
     _callSubscription = _firestoreService
         .callStream(_currentCallId!)
         .listen((callModel) async {
@@ -362,13 +382,30 @@ class WebRTCService {
         return;
       }
 
-      if (callModel.answer != null &&
-          pc.signalingState !=
-              RTCSignalingState.RTCSignalingStateStable) {
+      // Set remote description only once when answer arrives
+      if (callModel.answer != null && !answerSet) {
+        answerSet = true;
         _ringTimeout?.cancel();
-        final answer = RTCSessionDescription(callModel.answer!, 'answer');
-        await pc.setRemoteDescription(answer);
-        onCallStatusChanged?.call(CallStatus.connecting);
+        try {
+          final answer = RTCSessionDescription(callModel.answer!, 'answer');
+          await pc.setRemoteDescription(answer);
+          onCallStatusChanged?.call(CallStatus.connecting);
+
+          // Safety timeout: if ICE doesn't connect within 15s, end call
+          _disconnectTimeout?.cancel();
+          _disconnectTimeout = Timer(const Duration(seconds: 15), () {
+            if (_peerConnection?.iceConnectionState !=
+                    RTCIceConnectionState.RTCIceConnectionStateConnected &&
+                _peerConnection?.iceConnectionState !=
+                    RTCIceConnectionState.RTCIceConnectionStateCompleted) {
+              debugPrint('ICE connection timeout after 15s — ending call');
+              endCall();
+            }
+          });
+        } catch (e) {
+          debugPrint('Error setting remote description: $e');
+          await endCall();
+        }
       }
 
       if (callModel.status == CallStatus.ended ||

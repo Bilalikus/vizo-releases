@@ -1392,11 +1392,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   children: [
                     ListView.builder(
                       controller: _scrollCtrl,
-                      reverse: true, // ← KEY FIX: newest at bottom, anchored
+                      reverse: true,
                       padding: const EdgeInsets.symmetric(
                         horizontal: AppSizes.md,
                         vertical: AppSizes.sm,
                       ),
+                      cacheExtent: 1000, // pre-render off-screen for smooth scroll
+                      addAutomaticKeepAlives: true,
                       itemCount: docs.length,
                       itemBuilder: (_, i) {
                         // reverse: true means docs[0] is newest,
@@ -1479,12 +1481,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
                         // Date separator comes ABOVE the message
                         // In reverse list, we put bubble first then separator
-                        return Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            bubble,
-                            if (separator != null) separator,
-                          ],
+                        return RepaintBoundary(
+                          key: ValueKey(msg.id),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              bubble,
+                              if (separator != null) separator,
+                            ],
+                          ),
                         );
                       },
                     ),
