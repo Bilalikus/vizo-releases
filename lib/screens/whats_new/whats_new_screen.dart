@@ -5,6 +5,24 @@ import '../../core/constants/constants.dart';
 
 /// Changelog entries per version.
 const Map<String, List<_ChangeEntry>> _changelog = {
+  '1.8.0': [
+    _ChangeEntry(Icons.group_rounded, 'Группы',
+        'Создавайте групповые чаты — приглашайте участников, управляйте группой.'),
+    _ChangeEntry(Icons.public_rounded, 'Сообщества',
+        'Открытые сообщества доступны всем — вступайте одним нажатием.'),
+    _ChangeEntry(Icons.admin_panel_settings_rounded, 'Админ-панель',
+        'Панель администратора: статистика, управление пользователями, баны.'),
+    _ChangeEntry(Icons.analytics_rounded, 'Статистика приложения',
+        'Общее кол-во пользователей, онлайн, чаты, группы, установки.'),
+    _ChangeEntry(Icons.block_rounded, 'Система банов',
+        'Администратор может банить/разбанивать пользователей с указанием причины.'),
+    _ChangeEntry(Icons.image_rounded, 'Исправлены фото/видео',
+        'Фотографии теперь видны у обоих собеседников — данные передаются через Firestore.'),
+    _ChangeEntry(Icons.people_outline_rounded, 'Управление группами',
+        'Добавление участников, выход из группы, удаление группы (для создателя).'),
+    _ChangeEntry(Icons.explore_rounded, 'Обзор сообществ',
+        'Горизонтальная лента с доступными сообществами — вступайте в один тап.'),
+  ],
   '1.7.0': [
     _ChangeEntry(Icons.chat_bubble_outline_rounded, 'Чат полностью переписан',
         'Исправлена критическая проблема с прокруткой — чат больше НЕ перескакивает наверх.'),

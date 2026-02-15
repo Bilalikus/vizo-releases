@@ -22,3 +22,7 @@ export 'settings/chat_wallpaper_screen.dart';
 export 'settings/quick_replies_screen.dart';
 export 'settings/chat_folders_screen.dart';
 export 'shell/app_shell.dart';
+export 'groups/group_list_screen.dart';
+export 'groups/create_group_screen.dart';
+export 'groups/group_chat_screen.dart';
+export 'admin/admin_panel_screen.dart';

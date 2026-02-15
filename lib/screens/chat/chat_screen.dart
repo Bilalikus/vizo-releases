@@ -412,10 +412,30 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     final file = _pendingFile;
     final fileSize = file != null ? await file.length() : 0;
 
-    // Store local file path for display (not base64 — avoids Firestore size limits)
+    // Convert media to base64 data URI so the other user can see it
+    // (no Firebase Storage on Spark plan — store in Firestore directly)
     String? mediaUrl;
     if (file != null) {
-      mediaUrl = file.path; // Local path — renders with Image.file()
+      final bytes = await file.readAsBytes();
+      if (mediaType == 'image') {
+        // Images: compress + encode as base64 data URI
+        final ext = file.path.split('.').last.toLowerCase();
+        final mime = ext == 'png' ? 'image/png' : 'image/jpeg';
+        final b64 = base64Encode(bytes);
+        mediaUrl = 'data:$mime;base64,$b64';
+      } else if (mediaType == 'video') {
+        // Videos are too large for Firestore — store local path as fallback
+        // and indicate it's local-only
+        mediaUrl = file.path;
+      } else {
+        // Generic files — if small enough (<800KB), encode as base64
+        if (bytes.length < 800 * 1024) {
+          final b64 = base64Encode(bytes);
+          mediaUrl = 'data:application/octet-stream;base64,$b64';
+        } else {
+          mediaUrl = file.path;
+        }
+      }
     }
 
     final currentUser = ref.read(currentUserProvider);

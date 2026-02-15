@@ -8,14 +8,17 @@ import 'package:path_provider/path_provider.dart';
 import 'package:open_filex/open_filex.dart';
 import '../../core/constants/constants.dart';
 import '../../providers/providers.dart';
+import '../../services/admin_service.dart';
 import '../contacts/contact_list_screen.dart';
 import '../chat/chat_list_screen.dart';
 import '../history/call_history_screen.dart';
 import '../profile/profile_screen.dart';
+import '../groups/group_list_screen.dart';
+import '../admin/admin_panel_screen.dart';
 import '../whats_new/whats_new_screen.dart';
 
 /// Current app version — increment when releasing updates.
-const String _appVersion = '1.7.0';
+const String _appVersion = '1.8.0';
 
 /// Main shell with bottom navigation — premium tab bar + update banner.
 class AppShell extends ConsumerStatefulWidget {
@@ -27,10 +30,12 @@ class AppShell extends ConsumerStatefulWidget {
 
 class _AppShellState extends ConsumerState<AppShell> {
   int _currentIndex = 0;
+  bool _isAdmin = false;
 
   final _pages = const [
     ContactListScreen(),
     ChatListScreen(),
+    GroupListScreen(),
     CallHistoryScreen(),
     ProfileScreen(),
   ];
@@ -42,7 +47,23 @@ class _AppShellState extends ConsumerState<AppShell> {
       ref.read(currentUserProvider.notifier).loadUser();
       // Show "What's New" if user hasn't seen this version yet
       showWhatsNewIfNeeded(context, _appVersion);
+      _checkAdmin();
+      _recordInstall();
     });
+  }
+
+  Future<void> _checkAdmin() async {
+    final uid = ref.read(authServiceProvider).effectiveUid;
+    if (uid.isEmpty) return;
+    final isAdmin = await AdminService().isAdminUid(uid);
+    if (isAdmin && mounted) setState(() => _isAdmin = true);
+  }
+
+  Future<void> _recordInstall() async {
+    final uid = ref.read(authServiceProvider).effectiveUid;
+    if (uid.isEmpty) return;
+    final platform = Platform.isAndroid ? 'android' : 'macos';
+    await AdminService().recordInstall(uid, platform);
   }
 
   @override
@@ -109,17 +130,37 @@ class _AppShellState extends ConsumerState<AppShell> {
                               .snapshots(),
                         ),
                         _NavItem(
-                          icon: Icons.history_rounded,
-                          label: 'Звонки',
+                          icon: Icons.group_rounded,
+                          label: 'Группы',
                           isActive: _currentIndex == 2,
                           onTap: () => setState(() => _currentIndex = 2),
                         ),
                         _NavItem(
-                          icon: Icons.person_rounded,
-                          label: 'Профиль',
+                          icon: Icons.history_rounded,
+                          label: 'Звонки',
                           isActive: _currentIndex == 3,
                           onTap: () => setState(() => _currentIndex = 3),
                         ),
+                        _NavItem(
+                          icon: Icons.person_rounded,
+                          label: 'Профиль',
+                          isActive: _currentIndex == 4,
+                          onTap: () => setState(() => _currentIndex = 4),
+                        ),
+                        if (_isAdmin)
+                          _NavItem(
+                            icon: Icons.admin_panel_settings_rounded,
+                            label: 'Админ',
+                            isActive: false,
+                            onTap: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => const AdminPanelScreen(),
+                                ),
+                              );
+                            },
+                          ),
                       ],
                     ),
                   ),
