@@ -15,6 +15,18 @@ service cloud.firestore {
       match /contacts/{contactId} {
         allow read, write: if true;
       }
+
+      match /chat_folders/{folderId} {
+        allow read, write: if true;
+      }
+
+      match /quick_replies/{replyId} {
+        allow read, write: if true;
+      }
+
+      match /saved_messages/{msgId} {
+        allow read, write: if true;
+      }
     }
 
     // Calls (signaling)
@@ -36,6 +48,25 @@ service cloud.firestore {
       match /messages/{messageId} {
         allow read, write: if true;
       }
+    }
+
+    // Groups & Communities
+    match /groups/{groupId} {
+      allow read, write: if true;
+
+      match /messages/{messageId} {
+        allow read, write: if true;
+      }
+    }
+
+    // Banned Users (admin)
+    match /banned_users/{userId} {
+      allow read, write: if true;
+    }
+
+    // App Installs tracking (admin)
+    match /app_installs/{userId} {
+      allow read, write: if true;
     }
 
     // App Config (version, updates)

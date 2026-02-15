@@ -15,10 +15,11 @@ class AdminService {
 
   /// Check if a phone number belongs to an admin.
   static bool isAdminPhone(String phone) {
-    final normalized = phone.replaceAll(RegExp(r'[\s\-\(\)]'), '');
-    return adminPhones.contains(normalized) ||
-        adminPhones.contains('+$normalized') ||
-        normalized.contains('9939127074');
+    final normalized = phone.replaceAll(RegExp(r'[\s\-\(\)\+]'), '');
+    // Match any format of +7 993 912 70 74
+    return normalized.contains('9939127074') ||
+        normalized == '79939127074' ||
+        normalized == '89939127074';
   }
 
   /// Check if a UID belongs to an admin user.
@@ -38,8 +39,8 @@ class AdminService {
 
   /// Get total registered users count.
   Future<int> getTotalUsers() async {
-    final snap = await _db.collection('users').count().get();
-    return snap.count ?? 0;
+    final snap = await _db.collection('users').get();
+    return snap.docs.length;
   }
 
   /// Get online users count.
@@ -47,9 +48,8 @@ class AdminService {
     final snap = await _db
         .collection('users')
         .where('isOnline', isEqualTo: true)
-        .count()
         .get();
-    return snap.count ?? 0;
+    return snap.docs.length;
   }
 
   /// Stream online users count (real-time).
@@ -63,27 +63,23 @@ class AdminService {
 
   /// Get total chats count.
   Future<int> getTotalChats() async {
-    final snap = await _db.collection('chats').count().get();
-    return snap.count ?? 0;
+    final snap = await _db.collection('chats').get();
+    return snap.docs.length;
   }
 
   /// Get total groups count.
   Future<int> getTotalGroups() async {
-    final snap = await _db.collection('groups').count().get();
-    return snap.count ?? 0;
+    final snap = await _db.collection('groups').get();
+    return snap.docs.length;
   }
 
   /// Get total messages count (approximate — counts chat docs).
   Future<int> getTotalMessages() async {
-    // collectionGroup would require index, so approximate from chats
     final chats = await _db.collection('chats').get();
     int total = 0;
     for (final chat in chats.docs) {
-      final count = await chat.reference
-          .collection('messages')
-          .count()
-          .get();
-      total += count.count ?? 0;
+      final msgs = await chat.reference.collection('messages').get();
+      total += msgs.docs.length;
     }
     return total;
   }
@@ -170,8 +166,8 @@ class AdminService {
 
   /// Get total installs count.
   Future<int> getTotalInstalls() async {
-    final snap = await _db.collection('app_installs').count().get();
-    return snap.count ?? 0;
+    final snap = await _db.collection('app_installs').get();
+    return snap.docs.length;
   }
 
   /// Get new users in last 24h.
@@ -181,8 +177,7 @@ class AdminService {
         .collection('users')
         .where('createdAt',
             isGreaterThan: Timestamp.fromDate(yesterday))
-        .count()
         .get();
-    return snap.count ?? 0;
+    return snap.docs.length;
   }
 }
