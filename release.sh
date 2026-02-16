@@ -59,7 +59,7 @@ echo ""
 echo "💿 Создаю DMG..."
 DMG_PATH="build/Vizo-${VERSION}.dmg"
 hdiutil create -volname "Vizo" \
-  -srcfolder build/macos/Build/Products/Release/vizo.app \
+  -srcfolder build/macos/Build/Products/Release/Vizo.app \
   -ov -format UDZO "$DMG_PATH" -quiet
 echo "   ✅ DMG готов ($(du -h "$DMG_PATH" | cut -f1 | xargs))"
 

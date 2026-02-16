@@ -2,14 +2,17 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ui';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:video_player/video_player.dart';
+import 'package:path_provider/path_provider.dart';
 import '../../core/constants/constants.dart';
 import '../../models/message_model.dart';
 import '../../models/sticker_model.dart';
@@ -74,12 +77,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
   bool _isRecording = false;
   Timer? _recordTimer;
   int _recordSeconds = 0;
+  final AudioRecorder _audioRecorder = AudioRecorder();
   bool _hasText = false;
 
   // ─── Pending attachment state ──────────
   File? _pendingFile;
   String? _pendingFileName;
   String? _pendingMediaType; // 'image', 'video', 'file'
+
+  // ─── Message key map for scroll-to-message ───
+  final Map<String, GlobalKey> _messageKeys = {};
 
   @override
   void initState() {
@@ -118,6 +125,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     _chatSearchCtrl.dispose();
     _typingTimer?.cancel();
     _recordTimer?.cancel();
+    _audioRecorder.dispose();
     _setTyping(false);
     super.dispose();
   }
@@ -502,15 +510,52 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
   // ─── Voice recording ──────────────────
 
-  void _startRecording() {
-    setState(() {
-      _isRecording = true;
-      _recordSeconds = 0;
-    });
-    _recordTimer?.cancel();
-    _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() => _recordSeconds++);
-    });
+  bool _recordingLocked = false; // true = locked recording mode (user lifted finger after lock)
+
+  void _startRecording() async {
+    if (_isRecording) return; // prevent double-start
+    try {
+      if (await _audioRecorder.hasPermission()) {
+        final dir = await getTemporaryDirectory();
+        final path = '${dir.path}/vizo_voice_${DateTime.now().millisecondsSinceEpoch}.m4a';
+        await _audioRecorder.start(
+          const RecordConfig(
+            encoder: AudioEncoder.aacLc,
+            bitRate: 32000,
+            sampleRate: 16000,
+            numChannels: 1,
+          ),
+          path: path,
+        );
+        setState(() {
+          _isRecording = true;
+          _recordSeconds = 0;
+        });
+        _recordTimer?.cancel();
+        _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+          if (mounted) {
+            setState(() => _recordSeconds++);
+            // Auto-stop at 60 seconds to stay within Firestore 1MB limit
+            if (_recordSeconds >= 60) {
+              _stopRecording(send: true);
+            }
+          }
+        });
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Нет доступа к микрофону')),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('Recording error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка записи: $e')),
+        );
+      }
+    }
   }
 
   Future<void> _stopRecording({bool send = true}) async {
@@ -522,50 +567,94 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     setState(() {
       _isRecording = false;
       _recordSeconds = 0;
+      _recordingLocked = false;
     });
 
-    if (!send || duration < 1) return;
+    String? path;
+    try {
+      path = await _audioRecorder.stop();
+    } catch (e) {
+      debugPrint('Stop recording error: $e');
+    }
 
-    // Send voice message as a special mediaType
-    final currentUser = ref.read(currentUserProvider);
-    final senderName = currentUser.displayName.isNotEmpty
-        ? currentUser.displayName
-        : currentUser.phoneNumber;
+    if (!send || duration < 1 || path == null) return;
 
-    final durStr = '${(duration ~/ 60).toString().padLeft(2, '0')}:${(duration % 60).toString().padLeft(2, '0')}';
+    // Read recorded file and encode to base64
+    try {
+      final file = File(path);
+      if (!await file.exists()) {
+        debugPrint('Voice file does not exist: $path');
+        return;
+      }
+      final bytes = await file.readAsBytes();
 
-    await _db.collection('chats').doc(_chatId).set({
-      'participants': [_myUid, widget.peerId],
-      'lastMessage': '🎤 Голосовое ($durStr)',
-      'lastMessageAt': FieldValue.serverTimestamp(),
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+      // Firestore doc limit is ~1MB. Base64 expands by ~33%. Skip if too large.
+      if (bytes.length > 700000) {
+        debugPrint('Voice file too large: ${bytes.length} bytes');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Голосовое слишком длинное. Макс ~60 сек.')),
+          );
+        }
+        try { await file.delete(); } catch (_) {}
+        return;
+      }
 
-    await _db
-        .collection('chats')
-        .doc(_chatId)
-        .collection('messages')
-        .add({
-      'chatId': _chatId,
-      'senderId': _myUid,
-      'senderName': senderName,
-      'text': '🎤 Голосовое сообщение ($durStr)',
-      'mediaType': 'voice',
-      'mediaName': 'voice_message.m4a',
-      'mediaSize': duration,
-      'createdAt': FieldValue.serverTimestamp(),
-      'isRead': false,
-      'isEdited': false,
-      'isDeleted': false,
-    });
+      final base64Audio = base64Encode(bytes);
+
+      final currentUser = ref.read(currentUserProvider);
+      final senderName = currentUser.displayName.isNotEmpty
+          ? currentUser.displayName
+          : currentUser.phoneNumber;
+
+      final durStr = '${(duration ~/ 60).toString().padLeft(2, '0')}:${(duration % 60).toString().padLeft(2, '0')}';
+
+      await _db.collection('chats').doc(_chatId).set({
+        'participants': [_myUid, widget.peerId],
+        'lastMessage': '🎤 Голосовое ($durStr)',
+        'lastMessageAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      await _db
+          .collection('chats')
+          .doc(_chatId)
+          .collection('messages')
+          .add({
+        'chatId': _chatId,
+        'senderId': _myUid,
+        'senderName': senderName,
+        'text': '🎤 Голосовое сообщение ($durStr)',
+        'mediaType': 'voice',
+        'mediaUrl': base64Audio,
+        'mediaName': 'voice_message.m4a',
+        'mediaSize': duration,
+        'createdAt': FieldValue.serverTimestamp(),
+        'isRead': false,
+        'isEdited': false,
+        'isDeleted': false,
+      });
+
+      // Clean up temp file
+      try { await file.delete(); } catch (_) {}
+    } catch (e) {
+      debugPrint('Voice send error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка отправки: $e')),
+        );
+      }
+    }
   }
 
   void _cancelRecording() {
     _recordTimer?.cancel();
     _recordTimer = null;
+    try { _audioRecorder.stop(); } catch (_) {}
     setState(() {
       _isRecording = false;
       _recordSeconds = 0;
+      _recordingLocked = false;
     });
   }
 
@@ -584,6 +673,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               : currentUser.phoneNumber,
           receiverId: widget.peerId,
           receiverName: widget.peerName,
+          receiverAvatarUrl: widget.peerAvatarUrl,
           isVideoCall: false,
         ),
       ),
@@ -603,6 +693,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
               : currentUser.phoneNumber,
           receiverId: widget.peerId,
           receiverName: widget.peerName,
+          receiverAvatarUrl: widget.peerAvatarUrl,
           isVideoCall: true,
         ),
       ),
@@ -879,7 +970,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                     );
                   }).toList(),
                 ),
-                if (msg.reaction != null) ...[
+                if (msg.reaction != null || msg.reactions.isNotEmpty) ...[
                   const SizedBox(height: 12),
                   GestureDetector(
                     onTap: () => Navigator.pop(context, '__remove__'),
@@ -906,19 +997,51 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     );
 
     if (chosen == null || !mounted) return;
-    final newReaction = chosen == '__remove__' ? null : chosen;
-    final updates = <String, dynamic>{};
-    if (newReaction == null) {
-      updates['reaction'] = FieldValue.delete();
+
+    // Multi-reaction: toggle current user in the reactions map
+    final msgRef = _db.collection('chats').doc(_chatId).collection('messages').doc(msg.id);
+
+    if (chosen == '__remove__') {
+      // Remove all reactions by this user
+      final snap = await msgRef.get();
+      final data = snap.data() ?? {};
+      final reactions = Map<String, dynamic>.from(data['reactions'] as Map? ?? {});
+      bool changed = false;
+      for (final key in reactions.keys.toList()) {
+        final list = List<String>.from(reactions[key] as List? ?? []);
+        if (list.remove(_myUid)) {
+          changed = true;
+          if (list.isEmpty) {
+            reactions.remove(key);
+          } else {
+            reactions[key] = list;
+          }
+        }
+      }
+      if (changed) {
+        await msgRef.update({'reactions': reactions});
+      }
+      // Also clear legacy reaction field
+      await msgRef.update({'reaction': FieldValue.delete()});
     } else {
-      updates['reaction'] = newReaction;
+      // Toggle this emoji for current user
+      final snap = await msgRef.get();
+      final data = snap.data() ?? {};
+      final reactions = Map<String, dynamic>.from(data['reactions'] as Map? ?? {});
+      final list = List<String>.from(reactions[chosen] as List? ?? []);
+      if (list.contains(_myUid)) {
+        list.remove(_myUid);
+        if (list.isEmpty) {
+          reactions.remove(chosen);
+        } else {
+          reactions[chosen] = list;
+        }
+      } else {
+        list.add(_myUid);
+        reactions[chosen] = list;
+      }
+      await msgRef.update({'reactions': reactions, 'reaction': chosen});
     }
-    await _db
-        .collection('chats')
-        .doc(_chatId)
-        .collection('messages')
-        .doc(msg.id)
-        .update(updates);
   }
 
   Future<void> _forwardMessage(MessageModel msg) async {
@@ -1122,6 +1245,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     }
   }
 
+  /// Scroll to a specific message by ID (used for pinned / reply-to taps).
+  void _scrollToMessage(String messageId) {
+    // The list uses ValueKey(msg.id) — find the context via GlobalKey approach
+    // Since the ListView is reversed, we find the index of the message in the stream
+    // and use Scrollable.ensureVisible on the target
+    final ctx = _messageKeys[messageId]?.currentContext;
+    if (ctx != null) {
+      Scrollable.ensureVisible(
+        ctx,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+        alignment: 0.5,
+      );
+    }
+  }
+
   bool _differentDay(DateTime a, DateTime b) {
     return a.year != b.year || a.month != b.month || a.day != b.day;
   }
@@ -1309,7 +1448,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
         child: Column(
         children: [
           // ─── Pinned message bar ────────
-          _PinnedBar(chatId: _chatId),
+          _PinnedBar(chatId: _chatId, onTap: _scrollToMessage),
 
           // ─── Chat search bar ──────────
           if (_showChatSearch)
@@ -1483,6 +1622,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                                     child: _MessageBubble(
                                       msg: msg,
                                       isMine: isMine,
+                                      onScrollToMessage: _scrollToMessage,
                                     ),
                                   ),
                                 ],
@@ -1492,8 +1632,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 
                         // Date separator comes ABOVE the message
                         // In reverse list, we put bubble first then separator
+                        final key = _messageKeys.putIfAbsent(
+                            msg.id, () => GlobalKey());
                         return RepaintBoundary(
-                          key: ValueKey(msg.id),
+                          key: key,
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
@@ -1633,6 +1775,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                     ),
                   ),
                   GestureDetector(
+                    behavior: HitTestBehavior.opaque,
                     onTap: _cancelPendingFile,
                     child: Icon(
                       Icons.close_rounded,
@@ -1697,6 +1840,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                           ),
                           const Spacer(),
                           GestureDetector(
+                            behavior: HitTestBehavior.opaque,
                             onTap: _cancelRecording,
                             child: Container(
                               width: 40,
@@ -1712,6 +1856,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                           ),
                           const SizedBox(width: 8),
                           GestureDetector(
+                            behavior: HitTestBehavior.opaque,
                             onTap: () => _stopRecording(send: true),
                             child: Container(
                               width: 42,
@@ -1742,9 +1887,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                   children: [
                     // Attach file button (📎)
                     GestureDetector(
+                      behavior: HitTestBehavior.opaque,
                       onTap: _attachFile,
                       child: Padding(
-                        padding: const EdgeInsets.only(right: 4),
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
                         child: Icon(Icons.attach_file_rounded,
                             color: AppColors.textHint.withValues(alpha: 0.6),
                             size: 22),
@@ -1752,9 +1898,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                     ),
                     // Quick replies button
                     GestureDetector(
+                      behavior: HitTestBehavior.opaque,
                       onTap: _showQuickReplies,
                       child: Padding(
-                        padding: const EdgeInsets.only(right: 4),
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
                         child: Icon(Icons.flash_on_rounded,
                             color: AppColors.accent.withValues(alpha: 0.7),
                             size: 22),
@@ -1762,10 +1909,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                     ),
                     // Sticker button
                     GestureDetector(
+                      behavior: HitTestBehavior.opaque,
                       onTap: () => setState(
                           () => _showStickerPicker = !_showStickerPicker),
                       child: Padding(
-                        padding: const EdgeInsets.only(right: 6),
+                        padding: const EdgeInsets.only(right: 6, top: 8, bottom: 8),
                         child: Icon(
                           _showStickerPicker
                               ? Icons.keyboard_rounded
@@ -1813,6 +1961,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                     // Send or Mic button
                     if (_hasText || _editingMsg != null || _pendingFile != null)
                       GestureDetector(
+                        behavior: HitTestBehavior.opaque,
                         onTap: _pendingFile != null
                             ? _sendPendingFile
                             : _send,
@@ -1854,8 +2003,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                         ),
                       )
                     else
+                      // Hold to record — release to send, swipe left to cancel
                       GestureDetector(
-                        onTap: _startRecording,
+                        behavior: HitTestBehavior.opaque,
+                        onLongPressStart: (_) => _startRecording(),
+                        onLongPressEnd: (_) {
+                          if (_isRecording && !_recordingLocked) {
+                            _stopRecording(send: true);
+                          }
+                        },
+                        onTap: () {
+                          // Short tap just shows hint
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Зажмите для записи голосового'),
+                              duration: Duration(seconds: 1),
+                            ),
+                          );
+                        },
                         child: Container(
                           width: 42,
                           height: 42,
@@ -1900,8 +2065,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
 // ─── Pinned Message Bar ──────────────────────────────────
 
 class _PinnedBar extends StatelessWidget {
-  const _PinnedBar({required this.chatId});
+  const _PinnedBar({required this.chatId, this.onTap});
   final String chatId;
+  final void Function(String messageId)? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -1917,7 +2083,10 @@ class _PinnedBar extends StatelessWidget {
         final docs = snap.data?.docs ?? [];
         if (docs.isEmpty) return const SizedBox.shrink();
         final msg = MessageModel.fromFirestore(docs.first);
-        return Container(
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => onTap?.call(msg.id),
+          child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           decoration: BoxDecoration(
             color: AppColors.accent.withValues(alpha: 0.08),
@@ -1956,6 +2125,7 @@ class _PinnedBar extends StatelessWidget {
               ),
             ],
           ),
+        ),
         );
       },
     );
@@ -2405,10 +2575,12 @@ class _MessageBubble extends StatefulWidget {
   const _MessageBubble({
     required this.msg,
     required this.isMine,
+    this.onScrollToMessage,
   });
 
   final MessageModel msg;
   final bool isMine;
+  final void Function(String messageId)? onScrollToMessage;
 
   @override
   State<_MessageBubble> createState() => _MessageBubbleState();
@@ -2418,6 +2590,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
   bool _isPlayingVoice = false;
   Timer? _voiceTimer;
   int _voiceProgress = 0;
+  AudioPlayer? _voicePlayer;
 
   MessageModel get msg => widget.msg;
   bool get isMine => widget.isMine;
@@ -2425,33 +2598,76 @@ class _MessageBubbleState extends State<_MessageBubble> {
   @override
   void dispose() {
     _voiceTimer?.cancel();
+    _voicePlayer?.dispose();
     super.dispose();
   }
 
-  void _toggleVoicePlay() {
+  void _toggleVoicePlay() async {
     if (_isPlayingVoice) {
       _voiceTimer?.cancel();
+      _voicePlayer?.stop();
       setState(() {
         _isPlayingVoice = false;
         _voiceProgress = 0;
       });
     } else {
       final totalSec = msg.mediaSize ?? 5;
-      setState(() {
-        _isPlayingVoice = true;
-        _voiceProgress = 0;
-      });
-      _voiceTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-        if (!mounted) { timer.cancel(); return; }
-        setState(() => _voiceProgress++);
-        if (_voiceProgress >= totalSec) {
-          timer.cancel();
-          setState(() {
-            _isPlayingVoice = false;
-            _voiceProgress = 0;
-          });
-        }
-      });
+      final audioData = msg.mediaUrl;
+
+      if (audioData == null || audioData.isEmpty) {
+        // No audio data available
+        setState(() {
+          _isPlayingVoice = true;
+          _voiceProgress = 0;
+        });
+        // Fallback: just animate progress bar
+        _voiceTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+          if (!mounted) { timer.cancel(); return; }
+          setState(() => _voiceProgress++);
+          if (_voiceProgress >= totalSec) {
+            timer.cancel();
+            setState(() { _isPlayingVoice = false; _voiceProgress = 0; });
+          }
+        });
+        return;
+      }
+
+      try {
+        // Decode base64 audio, write to temp file, play
+        _voicePlayer?.dispose();
+        _voicePlayer = AudioPlayer();
+
+        final bytes = base64Decode(audioData);
+        final dir = await getTemporaryDirectory();
+        final tmpFile = File('${dir.path}/vizo_play_${msg.id}.m4a');
+        await tmpFile.writeAsBytes(bytes);
+
+        await _voicePlayer!.play(DeviceFileSource(tmpFile.path));
+
+        setState(() {
+          _isPlayingVoice = true;
+          _voiceProgress = 0;
+        });
+
+        _voiceTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+          if (!mounted) { timer.cancel(); return; }
+          setState(() => _voiceProgress++);
+          if (_voiceProgress >= totalSec) {
+            timer.cancel();
+            setState(() { _isPlayingVoice = false; _voiceProgress = 0; });
+          }
+        });
+
+        _voicePlayer!.onPlayerComplete.listen((_) {
+          if (mounted) {
+            _voiceTimer?.cancel();
+            setState(() { _isPlayingVoice = false; _voiceProgress = 0; });
+          }
+        });
+      } catch (e) {
+        debugPrint('Voice play error: $e');
+        setState(() { _isPlayingVoice = false; _voiceProgress = 0; });
+      }
     }
   }
 
@@ -2601,11 +2817,16 @@ class _MessageBubbleState extends State<_MessageBubble> {
         ? '${msg.createdAt.hour.toString().padLeft(2, '0')}:${msg.createdAt.minute.toString().padLeft(2, '0')}'
         : '';
 
+    final hasReactions = msg.reactions.isNotEmpty || msg.reaction != null;
+
     return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
+      padding: EdgeInsets.only(bottom: hasReactions ? 20 : 6),
       child: Align(
         alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
-        child: Container(
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Container(
           constraints: BoxConstraints(
             maxWidth: MediaQuery.of(context).size.width * 0.75,
           ),
@@ -2664,7 +2885,12 @@ class _MessageBubbleState extends State<_MessageBubble> {
 
               // Reply preview
               if (msg.replyToText != null && !msg.isDeleted) ...[
-                Container(
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: msg.replyToId != null
+                      ? () => widget.onScrollToMessage?.call(msg.replyToId!)
+                      : null,
+                child: Container(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   decoration: BoxDecoration(
@@ -2705,6 +2931,7 @@ class _MessageBubbleState extends State<_MessageBubble> {
                       ),
                     ],
                   ),
+                ),
                 ),
                 const SizedBox(height: 6),
               ],
@@ -3101,26 +3328,65 @@ class _MessageBubbleState extends State<_MessageBubble> {
                   ],
                 ],
               ),
-              // Reaction badge
-              if (msg.reaction != null) ...[
-                const SizedBox(height: 2),
-                Align(
-                  alignment:
-                      isMine ? Alignment.centerRight : Alignment.centerLeft,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text(msg.reaction!,
-                        style: const TextStyle(fontSize: 16)),
-                  ),
-                ),
+              // Reaction badge — positioned as overlay so it doesn't stretch bubble
               ],
-            ],
-          ),
+              ),
+            ),
+            // Multi-reaction badges
+            if (msg.reactions.isNotEmpty)
+              Positioned(
+                bottom: -14,
+                right: isMine ? 8 : null,
+                left: isMine ? null : 8,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: msg.reactions.entries.map((entry) {
+                    final emoji = entry.key;
+                    final users = entry.value;
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: AppColors.surfaceLight,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: Colors.white.withValues(alpha: 0.1), width: 0.5),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(emoji, style: const TextStyle(fontSize: 14)),
+                            if (users.length > 1) ...[
+                              const SizedBox(width: 3),
+                              Text('${users.length}', style: const TextStyle(fontSize: 11, color: AppColors.textHint, fontWeight: FontWeight.w600)),
+                            ],
+                          ],
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              )
+            // Legacy single reaction fallback
+            else if (msg.reaction != null)
+              Positioned(
+                bottom: -12,
+                right: isMine ? 8 : null,
+                left: isMine ? null : 8,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceLight,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.1),
+                      width: 0.5,
+                    ),
+                  ),
+                  child: Text(msg.reaction!, style: const TextStyle(fontSize: 16)),
+                ),
+              ),
+          ],
         ),
       ),
     );

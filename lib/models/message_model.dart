@@ -13,7 +13,8 @@ class MessageModel {
   final bool isDeleted;
   final bool isStarred;
   final bool isPinned;
-  final String? reaction;
+  final String? reaction; // legacy single reaction
+  final Map<String, List<String>> reactions; // emoji -> [uid1, uid2, ...]
   final String? replyToId;
   final String? replyToText;
   final String? replyToSender;
@@ -56,6 +57,7 @@ class MessageModel {
     this.isStarred = false,
     this.isPinned = false,
     this.reaction,
+    this.reactions = const {},
     this.replyToId,
     this.replyToText,
     this.replyToSender,
@@ -82,6 +84,7 @@ class MessageModel {
         senderId: '',
         text: '',
         createdAt: DateTime.now(),
+        reactions: const {},
       );
 
   bool get isEmpty => id.isEmpty;
@@ -105,6 +108,7 @@ class MessageModel {
     bool? isStarred,
     bool? isPinned,
     String? reaction,
+    Map<String, List<String>>? reactions,
     String? replyToId,
     String? replyToText,
     String? replyToSender,
@@ -137,6 +141,7 @@ class MessageModel {
       isStarred: isStarred ?? this.isStarred,
       isPinned: isPinned ?? this.isPinned,
       reaction: reaction ?? this.reaction,
+      reactions: reactions ?? this.reactions,
       replyToId: replyToId ?? this.replyToId,
       replyToText: replyToText ?? this.replyToText,
       replyToSender: replyToSender ?? this.replyToSender,
@@ -174,6 +179,7 @@ class MessageModel {
       isStarred: data['isStarred'] as bool? ?? false,
       isPinned: data['isPinned'] as bool? ?? false,
       reaction: data['reaction'] as String?,
+      reactions: _parseReactions(data['reactions']),
       replyToId: data['replyToId'] as String?,
       replyToText: data['replyToText'] as String?,
       replyToSender: data['replyToSender'] as String?,
@@ -196,6 +202,21 @@ class MessageModel {
     );
   }
 
+  /// Helper to check if any reactions exist (legacy or new)
+  bool get hasReactions => reactions.isNotEmpty || reaction != null;
+
+  static Map<String, List<String>> _parseReactions(dynamic raw) {
+    if (raw == null) return {};
+    if (raw is Map) {
+      final result = <String, List<String>>{};
+      for (final entry in raw.entries) {
+        result[entry.key.toString()] = List<String>.from(entry.value as List? ?? []);
+      }
+      return result;
+    }
+    return {};
+  }
+
   Map<String, dynamic> toFirestore() {
     return {
       'chatId': chatId,
@@ -209,6 +230,7 @@ class MessageModel {
       'isStarred': isStarred,
       'isPinned': isPinned,
       if (reaction != null) 'reaction': reaction,
+      if (reactions.isNotEmpty) 'reactions': reactions.map((k, v) => MapEntry(k, v)),
       if (replyToId != null) 'replyToId': replyToId,
       if (replyToText != null) 'replyToText': replyToText,
       if (replyToSender != null) 'replyToSender': replyToSender,

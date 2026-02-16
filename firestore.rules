@@ -27,6 +27,14 @@ service cloud.firestore {
       match /saved_messages/{msgId} {
         allow read, write: if true;
       }
+
+      match /warnings/{warnId} {
+        allow read, write: if true;
+      }
+
+      match /system_messages/{msgId} {
+        allow read, write: if true;
+      }
     }
 
     // Calls (signaling)
@@ -48,10 +56,27 @@ service cloud.firestore {
       match /messages/{messageId} {
         allow read, write: if true;
       }
+
+      match /scheduled_messages/{msgId} {
+        allow read, write: if true;
+      }
     }
 
     // Groups & Communities
     match /groups/{groupId} {
+      allow read, write: if true;
+
+      match /messages/{messageId} {
+        allow read, write: if true;
+      }
+
+      match /scheduled_messages/{msgId} {
+        allow read, write: if true;
+      }
+    }
+
+    // Channels
+    match /channels/{channelId} {
       allow read, write: if true;
 
       match /messages/{messageId} {
@@ -64,6 +89,11 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
+    // Banned Groups (admin)
+    match /banned_groups/{groupId} {
+      allow read, write: if true;
+    }
+
     // App Installs tracking (admin)
     match /app_installs/{userId} {
       allow read, write: if true;
@@ -73,6 +103,31 @@ service cloud.firestore {
     match /app_config/{docId} {
       allow read: if true;
       allow write: if true;
+    }
+
+    // Admin logs (audit)
+    match /admin_logs/{logId} {
+      allow read, write: if true;
+    }
+
+    // Reports
+    match /reports/{reportId} {
+      allow read, write: if true;
+    }
+
+    // Announcements
+    match /announcements/{annoId} {
+      allow read, write: if true;
+    }
+
+    // System config
+    match /system/{docId} {
+      allow read, write: if true;
+    }
+
+    // Stories / Moments
+    match /stories/{storyId} {
+      allow read, write: if true;
     }
   }
 }

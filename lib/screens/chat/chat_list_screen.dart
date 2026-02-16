@@ -5,6 +5,8 @@ import '../../core/constants/constants.dart';
 import '../../providers/providers.dart';
 import '../../widgets/widgets.dart';
 import 'chat_screen.dart';
+import 'archived_chats_screen.dart';
+import '../stories/stories_screen.dart';
 
 /// Chat list — shows all conversations for the current user.
 class ChatListScreen extends ConsumerStatefulWidget {
@@ -43,6 +45,46 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                           color: AppColors.textPrimary,
                           letterSpacing: -0.8,
                         ),
+                      ),
+                    ),
+                    GestureDetector(
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => const StoriesScreen()),
+                      ),
+                      child: Container(
+                        padding: const EdgeInsets.all(7),
+                        margin: const EdgeInsets.only(right: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.06),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.08),
+                          ),
+                        ),
+                        child: const Icon(Icons.auto_awesome_rounded,
+                            size: 16, color: AppColors.accent),
+                      ),
+                    ),
+                    GestureDetector(
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => const ArchivedChatsScreen()),
+                      ),
+                      child: Container(
+                        padding: const EdgeInsets.all(7),
+                        margin: const EdgeInsets.only(right: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.06),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.08),
+                          ),
+                        ),
+                        child: const Icon(Icons.archive_outlined,
+                            size: 16, color: AppColors.textHint),
                       ),
                     ),
                     GestureDetector(
@@ -168,7 +210,7 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
             },
           ),
 
-          const SliverToBoxAdapter(child: SizedBox(height: AppSizes.xxl)),
+          SliverToBoxAdapter(child: SizedBox(height: 100)),
         ],
       ),
     );
@@ -287,10 +329,46 @@ class _ChatTile extends StatelessWidget {
                 },
                 child: Row(
                   children: [
-                    VAvatar(
-                      imageUrl: peerAvatar,
-                      name: peerName,
-                      radius: 24,
+                    // Avatar with online indicator
+                    Stack(
+                      children: [
+                        VAvatar(
+                          imageUrl: peerAvatar,
+                          name: peerName,
+                          radius: 24,
+                        ),
+                        Positioned(
+                          bottom: 0,
+                          right: 0,
+                          child: StreamBuilder<DocumentSnapshot>(
+                            stream: FirebaseFirestore.instance
+                                .collection('users')
+                                .doc(peerId)
+                                .snapshots(),
+                            builder: (_, presenceSnap) {
+                              final pData = presenceSnap.data?.data()
+                                  as Map<String, dynamic>?;
+                              final isOnline =
+                                  pData?['isOnline'] as bool? ?? false;
+                              if (!isOnline) {
+                                return const SizedBox.shrink();
+                              }
+                              return Container(
+                                width: 12,
+                                height: 12,
+                                decoration: BoxDecoration(
+                                  color: AppColors.success,
+                                  shape: BoxShape.circle,
+                                  border: Border.all(
+                                    color: AppColors.black,
+                                    width: 2,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(width: AppSizes.md),
                     Expanded(

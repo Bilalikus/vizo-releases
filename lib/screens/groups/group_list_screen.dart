@@ -4,10 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/constants/constants.dart';
 import '../../models/group_model.dart';
+import '../../models/channel_model.dart';
 import '../../providers/providers.dart';
 import '../../widgets/widgets.dart';
 import 'create_group_screen.dart';
 import 'group_chat_screen.dart';
+import 'channel_chat_screen.dart';
 
 /// List of groups and communities the user belongs to.
 class GroupListScreen extends ConsumerWidget {
@@ -39,6 +41,26 @@ class GroupListScreen extends ConsumerWidget {
                           color: AppColors.textPrimary,
                           letterSpacing: -0.8,
                         ),
+                      ),
+                    ),
+                    GestureDetector(
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const CreateGroupScreen(isChannel: true),
+                          ),
+                        );
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.all(8),
+                        margin: const EdgeInsets.only(right: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.deepPurple.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.deepPurple.withValues(alpha: 0.3)),
+                        ),
+                        child: const Icon(Icons.campaign_rounded, color: Colors.deepPurple, size: 20),
                       ),
                     ),
                     GestureDetector(
@@ -175,11 +197,21 @@ class GroupListScreen extends ConsumerWidget {
             stream: FirebaseFirestore.instance
                 .collection('groups')
                 .where('isPublic', isEqualTo: true)
-                .orderBy('updatedAt', descending: true)
-                .limit(10)
+                .limit(30)
                 .snapshots(),
             builder: (context, snapshot) {
-              final docs = snapshot.data?.docs ?? [];
+              if (snapshot.hasError) {
+                debugPrint('Communities error: ${snapshot.error}');
+              }
+              final docs = snapshot.data?.docs ?? []
+                ..sort((a, b) {
+                  final aT = (a.data() as Map<String, dynamic>)['updatedAt'] as Timestamp?;
+                  final bT = (b.data() as Map<String, dynamic>)['updatedAt'] as Timestamp?;
+                  if (aT == null && bT == null) return 0;
+                  if (aT == null) return 1;
+                  if (bT == null) return -1;
+                  return bT.compareTo(aT);
+                });
               if (docs.isEmpty) {
                 return const SliverToBoxAdapter(
                   child: Padding(
@@ -310,9 +342,11 @@ class GroupListScreen extends ConsumerWidget {
             stream: FirebaseFirestore.instance
                 .collection('groups')
                 .where('members', arrayContains: uid)
-                .orderBy('updatedAt', descending: true)
                 .snapshots(),
             builder: (context, snapshot) {
+              if (snapshot.hasError) {
+                debugPrint('Groups error: ${snapshot.error}');
+              }
               if (snapshot.connectionState == ConnectionState.waiting) {
                 return const SliverFillRemaining(
                   hasScrollBody: false,
@@ -325,7 +359,15 @@ class GroupListScreen extends ConsumerWidget {
                 );
               }
 
-              final docs = snapshot.data?.docs ?? [];
+              final docs = snapshot.data?.docs ?? []
+                ..sort((a, b) {
+                  final aT = (a.data() as Map<String, dynamic>)['updatedAt'] as Timestamp?;
+                  final bT = (b.data() as Map<String, dynamic>)['updatedAt'] as Timestamp?;
+                  if (aT == null && bT == null) return 0;
+                  if (aT == null) return 1;
+                  if (bT == null) return -1;
+                  return bT.compareTo(aT);
+                });
 
               if (docs.isEmpty) {
                 return SliverFillRemaining(
@@ -376,7 +418,56 @@ class GroupListScreen extends ConsumerWidget {
             },
           ),
 
-          const SliverToBoxAdapter(child: SizedBox(height: AppSizes.xxl)),
+          const SliverToBoxAdapter(child: SizedBox(height: 16)),
+
+          // ─── Channels Label ──────────────
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: AppSizes.lg),
+              child: Text(
+                'Мои каналы',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textHint.withValues(alpha: 0.6),
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ),
+          ),
+
+          const SliverToBoxAdapter(child: SizedBox(height: 8)),
+
+          // ─── Channels list ──────────────────
+          StreamBuilder<QuerySnapshot>(
+            stream: FirebaseFirestore.instance
+                .collection('channels')
+                .where('subscribers', arrayContains: uid)
+                .snapshots(),
+            builder: (context, snapshot) {
+              final docs = snapshot.data?.docs ?? [];
+              if (docs.isEmpty) {
+                return const SliverToBoxAdapter(
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: AppSizes.lg, vertical: 8),
+                    child: Text('Нет каналов', style: TextStyle(color: AppColors.textHint, fontSize: 13)),
+                  ),
+                );
+              }
+              return SliverPadding(
+                padding: const EdgeInsets.symmetric(horizontal: AppSizes.md),
+                sliver: SliverList.builder(
+                  itemCount: docs.length,
+                  itemBuilder: (_, i) {
+                    final channel = ChannelModel.fromFirestore(docs[i]);
+                    return _ChannelTile(channel: channel, uid: uid);
+                  },
+                ),
+              );
+            },
+          ),
+
+          SliverToBoxAdapter(child: SizedBox(height: 100)),
         ],
       ),
     );
@@ -487,6 +578,86 @@ class _GroupTile extends StatelessWidget {
                             color: AppColors.textSecondary
                                 .withValues(alpha: 0.7),
                           ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Channel Tile ────────────────────────
+
+class _ChannelTile extends StatelessWidget {
+  const _ChannelTile({required this.channel, required this.uid});
+  final ChannelModel channel;
+  final String uid;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: AppSizes.xs),
+      child: VCard(
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => ChannelChatScreen(channel: channel),
+            ),
+          );
+        },
+        child: Row(
+          children: [
+            Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                color: Colors.deepPurple.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: const Icon(Icons.campaign_rounded, color: Colors.deepPurple, size: 24),
+            ),
+            const SizedBox(width: AppSizes.md),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          channel.name,
+                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: AppColors.textPrimary),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (channel.lastMessageAt != null)
+                        Text(
+                          '${channel.lastMessageAt!.hour.toString().padLeft(2, '0')}:${channel.lastMessageAt!.minute.toString().padLeft(2, '0')}',
+                          style: TextStyle(fontSize: 12, color: AppColors.textHint.withValues(alpha: 0.6)),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      const Padding(
+                        padding: EdgeInsets.only(right: 4),
+                        child: Icon(Icons.campaign, size: 12, color: Colors.deepPurple),
+                      ),
+                      Expanded(
+                        child: Text(
+                          channel.lastMessage ?? '${channel.subscribers.length} подписчиков',
+                          style: TextStyle(fontSize: 13, color: AppColors.textSecondary.withValues(alpha: 0.7)),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),

@@ -66,6 +66,7 @@ class _ContactListScreenState extends ConsumerState<ContactListScreen> {
                 : currentUser.phoneNumber,
             receiverId: receiver.uid,
             receiverName: contact.name,
+            receiverAvatarUrl: receiver.effectiveAvatar,
             isVideoCall: isVideoCall,
           ),
         ),
@@ -227,7 +228,7 @@ class _ContactListScreenState extends ConsumerState<ContactListScreen> {
               ),
             ),
 
-          const SliverToBoxAdapter(child: SizedBox(height: AppSizes.xxl)),
+          SliverToBoxAdapter(child: SizedBox(height: 100)),
         ],
       ),
     );

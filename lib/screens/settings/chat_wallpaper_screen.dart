@@ -48,7 +48,9 @@ class _ChatWallpaperScreenState extends State<ChatWallpaperScreen> {
 
   Future<void> _loadSaved() async {
     final p = await SharedPreferences.getInstance();
-    final idx = p.getInt('pref_wallpaper') ?? 0;
+    final saved = p.getInt('pref_wallpaper') ?? -1;
+    // saved -1 = no wallpaper → index 0; saved 0..11 → index 1..12
+    final idx = saved < 0 ? 0 : saved + 1;
     if (idx < _wallpapers.length) {
       setState(() => _selectedIndex = idx);
     }
@@ -57,7 +59,8 @@ class _ChatWallpaperScreenState extends State<ChatWallpaperScreen> {
   Future<void> _select(int index) async {
     setState(() => _selectedIndex = index);
     final p = await SharedPreferences.getInstance();
-    await p.setInt('pref_wallpaper', index);
+    // index 0 = "Нет обоев" → save -1 so chat_screen treats it as no wallpaper
+    await p.setInt('pref_wallpaper', index == 0 ? -1 : index - 1);
   }
 
   @override

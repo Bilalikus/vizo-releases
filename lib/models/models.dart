@@ -4,3 +4,4 @@ export 'call_model.dart';
 export 'message_model.dart';
 export 'sticker_model.dart';
 export 'group_model.dart';
+export 'channel_model.dart';

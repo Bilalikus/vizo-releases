@@ -6,7 +6,11 @@ import '../../core/constants/constants.dart';
 import '../../providers/providers.dart';
 import '../../widgets/widgets.dart';
 import '../settings/settings_screen.dart';
+import '../settings/app_lock_screen.dart';
+import '../settings/storage_data_screen.dart';
 import '../chat/saved_messages_screen.dart';
+import '../chat/archived_chats_screen.dart';
+import '../stories/stories_screen.dart';
 import 'profile_qr_screen.dart';
 import 'app_stats_screen.dart';
 
@@ -237,6 +241,62 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                             context,
                             MaterialPageRoute(
                                 builder: (_) => const AppStatsScreen()),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: AppSizes.sm),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _ProfileAction(
+                          icon: Icons.auto_awesome_rounded,
+                          label: 'Моменты',
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const StoriesScreen()),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: AppSizes.sm),
+                      Expanded(
+                        child: _ProfileAction(
+                          icon: Icons.archive_rounded,
+                          label: 'Архив',
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const ArchivedChatsScreen()),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: AppSizes.sm),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _ProfileAction(
+                          icon: Icons.lock_rounded,
+                          label: 'Блокировка',
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const AppLockScreen()),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: AppSizes.sm),
+                      Expanded(
+                        child: _ProfileAction(
+                          icon: Icons.storage_rounded,
+                          label: 'Хранилище',
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const StorageDataScreen()),
                           ),
                         ),
                       ),

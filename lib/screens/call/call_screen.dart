@@ -17,6 +17,7 @@ class CallScreen extends ConsumerStatefulWidget {
     required this.callerName,
     required this.receiverId,
     required this.receiverName,
+    this.receiverAvatarUrl,
     this.incomingCall,
     this.isVideoCall = false,
   });
@@ -25,6 +26,7 @@ class CallScreen extends ConsumerStatefulWidget {
   final String callerName;
   final String receiverId;
   final String receiverName;
+  final String? receiverAvatarUrl;
   final CallModel? incomingCall;
   final bool isVideoCall;
 
@@ -331,6 +333,8 @@ class _CallScreenState extends ConsumerState<CallScreen>
                         ),
                         child: VAvatar(
                           name: widget.receiverName,
+                          imageUrl: widget.receiverAvatarUrl ?? 
+                              (widget.incomingCall?.callerAvatar.isNotEmpty == true ? widget.incomingCall!.callerAvatar : null),
                           radius: 50,
                           showGlow: _status == CallStatus.active,
                         ),

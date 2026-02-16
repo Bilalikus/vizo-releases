@@ -75,6 +75,7 @@ class _IncomingCallScreenState extends ConsumerState<IncomingCallScreen>
           receiverName: currentUser.displayName.isNotEmpty
               ? currentUser.displayName
               : currentUser.phoneNumber,
+          receiverAvatarUrl: widget.call.callerAvatar.isNotEmpty ? widget.call.callerAvatar : null,
           incomingCall: widget.call,
           isVideoCall: widget.call.isVideoCall,
         ),
@@ -148,6 +149,7 @@ class _IncomingCallScreenState extends ConsumerState<IncomingCallScreen>
                 ),
                 child: VAvatar(
                   name: widget.call.callerName,
+                  imageUrl: widget.call.callerAvatar.isNotEmpty ? widget.call.callerAvatar : null,
                   radius: 50,
                   showGlow: true,
                 ),

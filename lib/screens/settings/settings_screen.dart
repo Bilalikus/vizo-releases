@@ -9,6 +9,8 @@ import 'blocked_users_screen.dart';
 import 'chat_wallpaper_screen.dart';
 import 'quick_replies_screen.dart';
 import 'chat_folders_screen.dart';
+import 'app_lock_screen.dart';
+import 'storage_data_screen.dart';
 
 /// App‑wide settings — notifications, privacy, appearance, storage.
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -269,6 +271,24 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 MaterialPageRoute(builder: (_) => const ChatFoldersScreen())),
           ),
 
+          const SizedBox(height: 20),
+          _SectionHeader(title: 'Безопасность'),
+          _NavTile(
+            icon: Icons.lock_rounded,
+            label: 'Блокировка приложения',
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const AppLockScreen())),
+          ),
+
+          const SizedBox(height: 20),
+          _SectionHeader(title: 'Хранилище'),
+          _NavTile(
+            icon: Icons.storage_rounded,
+            label: 'Данные и хранилище',
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const StorageDataScreen())),
+          ),
+
           const SizedBox(height: 32),
           _SectionHeader(title: 'Аккаунт'),
           _DangerTile(
@@ -280,7 +300,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           const SizedBox(height: 40),
           Center(
             child: Text(
-              'Vizo v1.8.0 • E2E Encrypted',
+              'Vizo v1.9.2 • E2E Encrypted',
               style: TextStyle(
                 fontSize: 12,
                 color: AppColors.textHint.withValues(alpha: 0.35),

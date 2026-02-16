@@ -6,6 +6,9 @@ import '../../core/constants/constants.dart';
 import '../../models/message_model.dart';
 import '../../providers/providers.dart';
 import '../../widgets/widgets.dart';
+import 'chat_theme_picker_screen.dart';
+import 'media_gallery_screen.dart';
+import 'schedule_message_screen.dart';
 
 /// Chat info — shared media count, mute, pin, clear, block.
 class ChatInfoScreen extends ConsumerStatefulWidget {
@@ -370,6 +373,80 @@ class _ChatInfoScreenState extends ConsumerState<ChatInfoScreen> {
                     size: 20, color: AppColors.warning),
                 SizedBox(width: 12),
                 Text('Избранные сообщения',
+                    style: TextStyle(
+                        fontSize: 15, color: AppColors.textPrimary)),
+                Spacer(),
+                Icon(Icons.chevron_right_rounded,
+                    size: 20, color: AppColors.textHint),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 8),
+
+          // ── Media gallery ──
+          VCard(
+            onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => MediaGalleryScreen(
+                        chatId: widget.chatId,
+                        peerName: widget.peerName))),
+            child: const Row(
+              children: [
+                Icon(Icons.photo_library_rounded,
+                    size: 20, color: AppColors.accentLight),
+                SizedBox(width: 12),
+                Text('Медиа галерея',
+                    style: TextStyle(
+                        fontSize: 15, color: AppColors.textPrimary)),
+                Spacer(),
+                Icon(Icons.chevron_right_rounded,
+                    size: 20, color: AppColors.textHint),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 8),
+
+          // ── Chat theme ──
+          VCard(
+            onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => ChatThemePickerScreen(
+                        chatId: widget.chatId))),
+            child: const Row(
+              children: [
+                Icon(Icons.palette_rounded,
+                    size: 20, color: AppColors.accentLight),
+                SizedBox(width: 12),
+                Text('Тема чата',
+                    style: TextStyle(
+                        fontSize: 15, color: AppColors.textPrimary)),
+                Spacer(),
+                Icon(Icons.chevron_right_rounded,
+                    size: 20, color: AppColors.textHint),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 8),
+
+          // ── Scheduled messages ──
+          VCard(
+            onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => ScheduleMessageScreen(
+                        chatId: widget.chatId,
+                        peerId: widget.peerId))),
+            child: const Row(
+              children: [
+                Icon(Icons.schedule_send_rounded,
+                    size: 20, color: AppColors.accentLight),
+                SizedBox(width: 12),
+                Text('Запланированные',
                     style: TextStyle(
                         fontSize: 15, color: AppColors.textPrimary)),
                 Spacer(),

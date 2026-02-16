@@ -17,8 +17,10 @@ import '../groups/group_list_screen.dart';
 import '../admin/admin_panel_screen.dart';
 import '../whats_new/whats_new_screen.dart';
 
+import '../chat/user_search_screen.dart';
+
 /// Current app version — increment when releasing updates.
-const String _appVersion = '1.8.0';
+const String _appVersion = '1.9.2';
 
 /// Main shell with bottom navigation — premium tab bar + update banner.
 class AppShell extends ConsumerStatefulWidget {
@@ -79,9 +81,18 @@ class _AppShellState extends ConsumerState<AppShell> {
 
     return Scaffold(
       backgroundColor: AppColors.black,
+      extendBody: true,
       body: IndexedStack(
         index: _currentIndex,
         children: _pages,
+      ),
+      floatingActionButton: FloatingActionButton(
+        backgroundColor: AppColors.accent,
+        onPressed: () => Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const UserSearchScreen()),
+        ),
+        child: const Icon(Icons.search_rounded, color: Colors.white),
       ),
       bottomNavigationBar: Column(
         mainAxisSize: MainAxisSize.min,
@@ -89,25 +100,51 @@ class _AppShellState extends ConsumerState<AppShell> {
           // ─── Update Banner ────────────────
           _UpdateBanner(),
 
-          // ─── Bottom Nav ───────────────────
-          ClipRRect(
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.06),
-                  border: Border(
-                    top: BorderSide(
-                      color: Colors.white.withValues(alpha: 0.1),
+          // ─── Floating Glass Bottom Nav ────
+          Padding(
+            padding: EdgeInsets.only(
+              left: 12,
+              right: 12,
+              bottom: MediaQuery.of(context).padding.bottom + 8,
+              top: 4,
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(24),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 40, sigmaY: 40),
+                child: Container(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        const Color(0xFF1A1028).withValues(alpha: 0.85),
+                        const Color(0xFF0D0A14).withValues(alpha: 0.9),
+                      ],
+                    ),
+                    borderRadius: BorderRadius.circular(24),
+                    border: Border.all(
+                      color: AppColors.accent.withValues(alpha: 0.2),
                       width: 0.5,
                     ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.accent.withValues(alpha: 0.08),
+                        blurRadius: 24,
+                        spreadRadius: 0,
+                        offset: const Offset(0, -2),
+                      ),
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.4),
+                        blurRadius: 16,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
                   ),
-                ),
-                child: SafeArea(
                   child: Padding(
                     padding: const EdgeInsets.symmetric(
-                      horizontal: AppSizes.md,
-                      vertical: AppSizes.sm,
+                      horizontal: 6,
+                      vertical: 6,
                     ),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceAround,
@@ -531,15 +568,16 @@ open "\$DEST"
           .doc('version')
           .snapshots(),
       builder: (context, snapshot) {
-        if (!snapshot.hasData || !snapshot.data!.exists) {
+        if (snapshot.hasError || !snapshot.hasData || !snapshot.data!.exists) {
           return const SizedBox.shrink();
         }
 
         final data = snapshot.data!.data() as Map<String, dynamic>?;
-        final latestVersion = data?['latest'] as String? ?? _appVersion;
+        if (data == null) return const SizedBox.shrink();
+        final latestVersion = data['latest'] as String? ?? _appVersion;
         final updateUrl = Platform.isAndroid
-            ? (data?['apkUrl'] as String? ?? '')
-            : (data?['dmgUrl'] as String? ?? '');
+            ? (data['apkUrl'] as String? ?? '')
+            : (data['dmgUrl'] as String? ?? '');
 
         // Compare versions properly — only show banner when remote > local
         if (updateUrl.isEmpty || !_isNewerVersion(latestVersion, _appVersion)) {

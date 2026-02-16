@@ -262,7 +262,7 @@ class _CallHistoryScreenState extends ConsumerState<CallHistoryScreen> {
               ),
             ),
 
-          const SliverToBoxAdapter(child: SizedBox(height: AppSizes.xxl)),
+          SliverToBoxAdapter(child: SizedBox(height: 100)),
         ],
       ),
     );

@@ -2,10 +2,11 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import '../../core/constants/constants.dart';
 import '../../providers/providers.dart';
 
-/// Profile QR code screen — generates a QR-like visual code for sharing.
+/// Profile QR code screen — generates a real scannable QR code.
 class ProfileQrScreen extends ConsumerWidget {
   const ProfileQrScreen({super.key});
 
@@ -14,6 +15,10 @@ class ProfileQrScreen extends ConsumerWidget {
     final user = ref.watch(currentUserProvider);
     final phone = user.phoneNumber;
     final name = user.displayName.isNotEmpty ? user.displayName : phone;
+    final uid = user.uid;
+
+    // QR data: vizo://user/<uid>?phone=<phone>&name=<name>
+    final qrData = 'vizo://user/$uid?phone=${Uri.encodeComponent(phone)}&name=${Uri.encodeComponent(name)}';
 
     return Scaffold(
       backgroundColor: AppColors.black,
@@ -46,10 +51,10 @@ class ProfileQrScreen extends ConsumerWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // ─── QR Visual ──────────
+              // ─── QR Code ──────────
               Container(
-                width: 260,
-                height: 260,
+                width: 280,
+                height: 280,
                 decoration: BoxDecoration(
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(24),
@@ -61,11 +66,21 @@ class ProfileQrScreen extends ConsumerWidget {
                     ),
                   ],
                 ),
-                child: Center(
-                  child: CustomPaint(
-                    size: const Size(220, 220),
-                    painter: _QrPatternPainter(phone),
+                padding: const EdgeInsets.all(16),
+                child: QrImageView(
+                  data: qrData,
+                  version: QrVersions.auto,
+                  size: 248,
+                  backgroundColor: Colors.white,
+                  eyeStyle: const QrEyeStyle(
+                    eyeShape: QrEyeShape.square,
+                    color: Color(0xFF8A2BE2),
                   ),
+                  dataModuleStyle: const QrDataModuleStyle(
+                    dataModuleShape: QrDataModuleShape.circle,
+                    color: Color(0xFF1A1A1A),
+                  ),
+                  errorCorrectionLevel: QrErrorCorrectLevel.M,
                 ),
               ),
               const SizedBox(height: 24),
@@ -80,7 +95,26 @@ class ProfileQrScreen extends ConsumerWidget {
                       fontSize: 15,
                       color: AppColors.textSecondary
                           .withValues(alpha: 0.7))),
-              const SizedBox(height: 32),
+              const SizedBox(height: 8),
+              // ─── @Name tag ──────────
+              if (name != phone)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AppColors.accent.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    '@$name',
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.accent,
+                    ),
+                  ),
+                ),
+              const SizedBox(height: 24),
               // ─── Share button ──────────
               GestureDetector(
                 onTap: () {
@@ -129,7 +163,7 @@ class ProfileQrScreen extends ConsumerWidget {
                 ),
               ),
               const SizedBox(height: 16),
-              Text('Покажите этот код другу для быстрого добавления',
+              Text('Покажите этот QR-код для быстрого добавления в контакты',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                       fontSize: 13,
@@ -140,96 +174,4 @@ class ProfileQrScreen extends ConsumerWidget {
       ),
     );
   }
-}
-
-/// Custom painter that generates a pseudo-QR pattern from a phone string.
-class _QrPatternPainter extends CustomPainter {
-  _QrPatternPainter(this.data);
-  final String data;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final cellSize = size.width / 21;
-    final paint = Paint()..color = Colors.black;
-
-    // Generate a deterministic grid from the phone number
-    final grid = List.generate(21, (row) {
-      return List.generate(21, (col) {
-        // Corner positioning squares
-        if (_isCornerSquare(row, col)) return true;
-        // Generate pattern from data hash
-        final hash = (data.hashCode + row * 31 + col * 17) & 0x7FFFFFFF;
-        return hash % 3 != 0;
-      });
-    });
-
-    for (int r = 0; r < 21; r++) {
-      for (int c = 0; c < 21; c++) {
-        if (grid[r][c]) {
-          final rect = Rect.fromLTWH(
-            c * cellSize,
-            r * cellSize,
-            cellSize - 0.5,
-            cellSize - 0.5,
-          );
-          canvas.drawRRect(
-            RRect.fromRectAndRadius(rect, const Radius.circular(2)),
-            paint,
-          );
-        }
-      }
-    }
-
-    // Draw Vizo logo in center
-    final center = Offset(size.width / 2, size.height / 2);
-    final logoPaint = Paint()..color = Colors.white;
-    canvas.drawCircle(center, cellSize * 2.5, logoPaint);
-    final accentPaint = Paint()..color = AppColors.accent;
-    canvas.drawCircle(center, cellSize * 2, accentPaint);
-
-    // V letter
-    final textPainter = TextPainter(
-      text: const TextSpan(
-        text: 'V',
-        style: TextStyle(
-          color: Colors.white,
-          fontSize: 20,
-          fontWeight: FontWeight.w900,
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    textPainter.paint(
-      canvas,
-      Offset(center.dx - textPainter.width / 2,
-          center.dy - textPainter.height / 2),
-    );
-  }
-
-  bool _isCornerSquare(int row, int col) {
-    // Top-left
-    if (row < 7 && col < 7) {
-      if (row == 0 || row == 6 || col == 0 || col == 6) return true;
-      if (row >= 2 && row <= 4 && col >= 2 && col <= 4) return true;
-      return false;
-    }
-    // Top-right
-    if (row < 7 && col > 13) {
-      final c = col - 14;
-      if (row == 0 || row == 6 || c == 0 || c == 6) return true;
-      if (row >= 2 && row <= 4 && c >= 2 && c <= 4) return true;
-      return false;
-    }
-    // Bottom-left
-    if (row > 13 && col < 7) {
-      final r = row - 14;
-      if (r == 0 || r == 6 || col == 0 || col == 6) return true;
-      if (r >= 2 && r <= 4 && col >= 2 && col <= 4) return true;
-      return false;
-    }
-    return false;
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
