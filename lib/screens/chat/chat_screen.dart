@@ -647,15 +647,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
     }
   }
 
-  void _cancelRecording() {
+  void _cancelRecording() async {
     _recordTimer?.cancel();
     _recordTimer = null;
-    try { _audioRecorder.stop(); } catch (_) {}
+    final wasRecording = _isRecording;
     setState(() {
       _isRecording = false;
       _recordSeconds = 0;
       _recordingLocked = false;
     });
+    if (wasRecording) {
+      try {
+        final path = await _audioRecorder.stop();
+        // Delete the temp file
+        if (path != null) {
+          try { await File(path).delete(); } catch (_) {}
+        }
+      } catch (_) {}
+    }
   }
 
   // ─── Voice Call / Video Call from chat ──
@@ -2003,7 +2012,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                         ),
                       )
                     else
-                      // Hold to record — release to send, swipe left to cancel
+                      // Tap to record (locked mode), or hold to record (release to send)
                       GestureDetector(
                         behavior: HitTestBehavior.opaque,
                         onLongPressStart: (_) => _startRecording(),
@@ -2013,13 +2022,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen>
                           }
                         },
                         onTap: () {
-                          // Short tap just shows hint
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Зажмите для записи голосового'),
-                              duration: Duration(seconds: 1),
-                            ),
-                          );
+                          // Single tap starts recording in locked mode
+                          _recordingLocked = true;
+                          _startRecording();
                         },
                         child: Container(
                           width: 42,
@@ -2591,6 +2596,8 @@ class _MessageBubbleState extends State<_MessageBubble> {
   Timer? _voiceTimer;
   int _voiceProgress = 0;
   AudioPlayer? _voicePlayer;
+  StreamSubscription? _positionSub;
+  StreamSubscription? _completeSub;
 
   MessageModel get msg => widget.msg;
   bool get isMine => widget.isMine;
@@ -2598,6 +2605,8 @@ class _MessageBubbleState extends State<_MessageBubble> {
   @override
   void dispose() {
     _voiceTimer?.cancel();
+    _positionSub?.cancel();
+    _completeSub?.cancel();
     _voicePlayer?.dispose();
     super.dispose();
   }
@@ -2605,7 +2614,9 @@ class _MessageBubbleState extends State<_MessageBubble> {
   void _toggleVoicePlay() async {
     if (_isPlayingVoice) {
       _voiceTimer?.cancel();
-      _voicePlayer?.stop();
+      _positionSub?.cancel();
+      _completeSub?.cancel();
+      await _voicePlayer?.stop();
       setState(() {
         _isPlayingVoice = false;
         _voiceProgress = 0;
@@ -2615,12 +2626,11 @@ class _MessageBubbleState extends State<_MessageBubble> {
       final audioData = msg.mediaUrl;
 
       if (audioData == null || audioData.isEmpty) {
-        // No audio data available
+        // No audio data available — fallback timer animation
         setState(() {
           _isPlayingVoice = true;
           _voiceProgress = 0;
         });
-        // Fallback: just animate progress bar
         _voiceTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
           if (!mounted) { timer.cancel(); return; }
           setState(() => _voiceProgress++);
@@ -2633,14 +2643,37 @@ class _MessageBubbleState extends State<_MessageBubble> {
       }
 
       try {
-        // Decode base64 audio, write to temp file, play
+        // Stop any existing playback
+        _voiceTimer?.cancel();
+        _positionSub?.cancel();
+        _completeSub?.cancel();
         _voicePlayer?.dispose();
         _voicePlayer = AudioPlayer();
 
+        // Decode base64 audio, write to temp file with unique name
         final bytes = base64Decode(audioData);
         final dir = await getTemporaryDirectory();
-        final tmpFile = File('${dir.path}/vizo_play_${msg.id}.m4a');
+        final ts = DateTime.now().millisecondsSinceEpoch;
+        final tmpFile = File('${dir.path}/vizo_play_${msg.id}_$ts.m4a');
         await tmpFile.writeAsBytes(bytes);
+
+        // Use position stream for accurate progress tracking
+        _positionSub = _voicePlayer!.onPositionChanged.listen((pos) {
+          if (!mounted) return;
+          final sec = pos.inSeconds;
+          if (sec != _voiceProgress) {
+            setState(() => _voiceProgress = sec);
+          }
+        });
+
+        _completeSub = _voicePlayer!.onPlayerComplete.listen((_) {
+          if (mounted) {
+            _positionSub?.cancel();
+            setState(() { _isPlayingVoice = false; _voiceProgress = 0; });
+            // Clean up temp file
+            try { tmpFile.delete(); } catch (_) {}
+          }
+        });
 
         await _voicePlayer!.play(DeviceFileSource(tmpFile.path));
 
@@ -2648,24 +2681,10 @@ class _MessageBubbleState extends State<_MessageBubble> {
           _isPlayingVoice = true;
           _voiceProgress = 0;
         });
-
-        _voiceTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-          if (!mounted) { timer.cancel(); return; }
-          setState(() => _voiceProgress++);
-          if (_voiceProgress >= totalSec) {
-            timer.cancel();
-            setState(() { _isPlayingVoice = false; _voiceProgress = 0; });
-          }
-        });
-
-        _voicePlayer!.onPlayerComplete.listen((_) {
-          if (mounted) {
-            _voiceTimer?.cancel();
-            setState(() { _isPlayingVoice = false; _voiceProgress = 0; });
-          }
-        });
       } catch (e) {
         debugPrint('Voice play error: $e');
+        _positionSub?.cancel();
+        _completeSub?.cancel();
         setState(() { _isPlayingVoice = false; _voiceProgress = 0; });
       }
     }

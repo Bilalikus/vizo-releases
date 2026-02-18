@@ -1,7 +1,7 @@
 name: vizo
 description: "Vizo — Encrypted Calling App"
 publish_to: 'none'
-version: 1.9.2+12
+version: 1.9.3+13
 
 environment:
   sdk: ^3.7.0

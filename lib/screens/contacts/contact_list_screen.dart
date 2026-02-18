@@ -228,7 +228,7 @@ class _ContactListScreenState extends ConsumerState<ContactListScreen> {
               ),
             ),
 
-          SliverToBoxAdapter(child: SizedBox(height: 100)),
+          SliverToBoxAdapter(child: SizedBox(height: 80)),
         ],
       ),
     );

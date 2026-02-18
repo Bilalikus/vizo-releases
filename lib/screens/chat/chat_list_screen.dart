@@ -27,26 +27,15 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
       backgroundColor: AppColors.black,
       body: CustomScrollView(
         slivers: [
-          // ─── Header ─────────────────────────
+          // ─── Compact top bar ─────────────────
           SliverToBoxAdapter(
             child: SafeArea(
               bottom: false,
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(
-                    AppSizes.lg, AppSizes.lg, AppSizes.lg, AppSizes.sm),
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
                 child: Row(
                   children: [
-                    const Expanded(
-                      child: Text(
-                        'Чаты',
-                        style: TextStyle(
-                          fontSize: 28,
-                          fontWeight: FontWeight.w800,
-                          color: AppColors.textPrimary,
-                          letterSpacing: -0.8,
-                        ),
-                      ),
-                    ),
+                    // Stories button
                     GestureDetector(
                       onTap: () => Navigator.push(
                         context,
@@ -55,10 +44,9 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                       ),
                       child: Container(
                         padding: const EdgeInsets.all(7),
-                        margin: const EdgeInsets.only(right: 6),
                         decoration: BoxDecoration(
                           color: Colors.white.withValues(alpha: 0.06),
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(10),
                           border: Border.all(
                             color: Colors.white.withValues(alpha: 0.08),
                           ),
@@ -67,6 +55,8 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                             size: 16, color: AppColors.accent),
                       ),
                     ),
+                    const SizedBox(width: 6),
+                    // Archive
                     GestureDetector(
                       onTap: () => Navigator.push(
                         context,
@@ -75,10 +65,9 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                       ),
                       child: Container(
                         padding: const EdgeInsets.all(7),
-                        margin: const EdgeInsets.only(right: 6),
                         decoration: BoxDecoration(
                           color: Colors.white.withValues(alpha: 0.06),
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(10),
                           border: Border.all(
                             color: Colors.white.withValues(alpha: 0.08),
                           ),
@@ -87,6 +76,8 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                             size: 16, color: AppColors.textHint),
                       ),
                     ),
+                    const Spacer(),
+                    // Unread toggle
                     GestureDetector(
                       onTap: () => setState(() => _onlyUnread = !_onlyUnread),
                       child: AnimatedContainer(
@@ -97,7 +88,7 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                           color: _onlyUnread
                               ? AppColors.accent.withValues(alpha: 0.15)
                               : Colors.white.withValues(alpha: 0.06),
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(10),
                           border: Border.all(
                             color: _onlyUnread
                                 ? AppColors.accent.withValues(alpha: 0.3)
@@ -110,8 +101,8 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                             Icon(
                               _onlyUnread
                                   ? Icons.mark_email_unread_rounded
-                                  : Icons.email_outlined,
-                              size: 16,
+                                  : Icons.filter_list_rounded,
+                              size: 14,
                               color: _onlyUnread
                                   ? AppColors.accent
                                   : AppColors.textHint,
@@ -210,7 +201,7 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
             },
           ),
 
-          SliverToBoxAdapter(child: SizedBox(height: 100)),
+          SliverToBoxAdapter(child: SizedBox(height: 80)),
         ],
       ),
     );
@@ -323,6 +314,7 @@ class _ChatTile extends StatelessWidget {
                       builder: (_) => ChatScreen(
                         peerId: peerId,
                         peerName: peerName,
+                        peerAvatarUrl: peerAvatar,
                       ),
                     ),
                   );
@@ -413,6 +405,29 @@ class _ChatTile extends StatelessWidget {
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                 ),
+                              ),
+                              // Muted icon
+                              StreamBuilder<DocumentSnapshot>(
+                                stream: FirebaseFirestore.instance
+                                    .collection('chats')
+                                    .doc(chatId)
+                                    .snapshots(),
+                                builder: (_, chatSnap) {
+                                  final chatData = chatSnap.data?.data()
+                                      as Map<String, dynamic>?;
+                                  final muted = List<String>.from(
+                                      chatData?['mutedBy'] ?? []);
+                                  if (muted.contains(currentUid)) {
+                                    return Padding(
+                                      padding: const EdgeInsets.only(right: 4),
+                                      child: Icon(Icons.volume_off_rounded,
+                                          size: 14,
+                                          color: AppColors.textHint
+                                              .withValues(alpha: 0.5)),
+                                    );
+                                  }
+                                  return const SizedBox.shrink();
+                                },
                               ),
                               if (unreadCount > 0)
                                 Container(
