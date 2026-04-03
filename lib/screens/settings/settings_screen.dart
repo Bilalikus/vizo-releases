@@ -300,7 +300,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           const SizedBox(height: 40),
           Center(
             child: Text(
-              'Vizo v1.9.4 • E2E Encrypted',
+              'Vizo v1.9.5 • E2E Encrypted',
               style: TextStyle(
                 fontSize: 12,
                 color: AppColors.textHint.withValues(alpha: 0.35),

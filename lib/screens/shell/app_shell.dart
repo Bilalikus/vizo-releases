@@ -9,7 +9,6 @@ import 'package:open_filex/open_filex.dart';
 import '../../core/constants/constants.dart';
 import '../../providers/providers.dart';
 import '../../services/admin_service.dart';
-import '../contacts/contact_list_screen.dart';
 import '../chat/chat_list_screen.dart';
 import '../history/call_history_screen.dart';
 import '../profile/profile_screen.dart';
@@ -17,10 +16,8 @@ import '../groups/group_list_screen.dart';
 import '../admin/admin_panel_screen.dart';
 import '../whats_new/whats_new_screen.dart';
 
-import '../chat/user_search_screen.dart';
-
 /// Current app version — increment when releasing updates.
-const String _appVersion = '1.9.4';
+const String _appVersion = '1.9.5';
 
 /// Main shell with bottom navigation — premium tab bar + update banner.
 class AppShell extends ConsumerStatefulWidget {
@@ -35,7 +32,6 @@ class _AppShellState extends ConsumerState<AppShell> {
   bool _isAdmin = false;
 
   final _pages = const [
-    ContactListScreen(),
     ChatListScreen(),
     GroupListScreen(),
     CallHistoryScreen(),
@@ -85,14 +81,6 @@ class _AppShellState extends ConsumerState<AppShell> {
       body: IndexedStack(
         index: _currentIndex,
         children: _pages,
-      ),
-      floatingActionButton: FloatingActionButton(
-        backgroundColor: AppColors.accent,
-        onPressed: () => Navigator.push(
-          context,
-          MaterialPageRoute(builder: (_) => const UserSearchScreen()),
-        ),
-        child: const Icon(Icons.search_rounded, color: Colors.white),
       ),
       bottomNavigationBar: Column(
         mainAxisSize: MainAxisSize.min,
@@ -150,16 +138,10 @@ class _AppShellState extends ConsumerState<AppShell> {
                       mainAxisAlignment: MainAxisAlignment.spaceAround,
                       children: [
                         _NavItem(
-                          icon: Icons.people_alt_rounded,
-                          label: 'Контакты',
-                          isActive: _currentIndex == 0,
-                          onTap: () => setState(() => _currentIndex = 0),
-                        ),
-                        _NavItem(
                           icon: Icons.chat_rounded,
                           label: 'Чаты',
-                          isActive: _currentIndex == 1,
-                          onTap: () => setState(() => _currentIndex = 1),
+                          isActive: _currentIndex == 0,
+                          onTap: () => setState(() => _currentIndex = 0),
                           badgeStream: FirebaseFirestore.instance
                               .collectionGroup('messages')
                               .where('senderId', isNotEqualTo: ref.read(authServiceProvider).effectiveUid)
@@ -169,20 +151,20 @@ class _AppShellState extends ConsumerState<AppShell> {
                         _NavItem(
                           icon: Icons.group_rounded,
                           label: 'Группы',
+                          isActive: _currentIndex == 1,
+                          onTap: () => setState(() => _currentIndex = 1),
+                        ),
+                        _NavItem(
+                          icon: Icons.call_rounded,
+                          label: 'Звонки',
                           isActive: _currentIndex == 2,
                           onTap: () => setState(() => _currentIndex = 2),
                         ),
                         _NavItem(
-                          icon: Icons.history_rounded,
-                          label: 'Звонки',
-                          isActive: _currentIndex == 3,
-                          onTap: () => setState(() => _currentIndex = 3),
-                        ),
-                        _NavItem(
                           icon: Icons.person_rounded,
                           label: 'Профиль',
-                          isActive: _currentIndex == 4,
-                          onTap: () => setState(() => _currentIndex = 4),
+                          isActive: _currentIndex == 3,
+                          onTap: () => setState(() => _currentIndex = 3),
                         ),
                         if (_isAdmin)
                           _NavItem(

@@ -5,6 +5,16 @@ import '../../core/constants/constants.dart';
 
 /// Changelog entries per version.
 const Map<String, List<_ChangeEntry>> _changelog = {
+  '1.9.5': [
+    _ChangeEntry(Icons.chat_rounded, 'Telegram-стиль',
+        'Интерфейс чатов полностью переработан — как в Telegram/WhatsApp.'),
+    _ChangeEntry(Icons.call_rounded, 'Входящие звонки',
+        'Полноэкранный оверлей при входящем звонке с рингтоном — видно из любого экрана.'),
+    _ChangeEntry(Icons.tab_rounded, 'Навигация',
+        'Убрана вкладка Контакты — теперь 4 вкладки: Чаты, Группы, Звонки, Профиль.'),
+    _ChangeEntry(Icons.music_note_rounded, 'Рингтон',
+        'Добавлен рингтон для входящих звонков.'),
+  ],
   '1.9.4': [
     _ChangeEntry(Icons.visibility_off_rounded, 'Сообщества и каналы скрыты',
         'Вкладки сообществ и каналов временно отключены для доработки.'),

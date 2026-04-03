@@ -1,7 +1,7 @@
 name: vizo
 description: "Vizo — Encrypted Calling App"
 publish_to: 'none'
-version: 1.9.4+14
+version: 1.9.5+15
 
 environment:
   sdk: ^3.7.0
@@ -75,3 +75,4 @@ flutter:
 
   assets:
     - assets/Icon.png
+    - assets/ringtone.mp3
