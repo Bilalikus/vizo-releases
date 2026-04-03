@@ -113,10 +113,14 @@ class _ContactListScreenState extends ConsumerState<ContactListScreen> {
     final contacts = ref.watch(contactsProvider);
     final filtered = _filter(contacts);
 
+    final bottomPad = MediaQuery.of(context).padding.bottom;
+
     return Scaffold(
       backgroundColor: AppColors.black,
-      body: CustomScrollView(
-        slivers: [
+      body: Container(
+        color: AppColors.black,
+        child: CustomScrollView(
+          slivers: [
           // ─── Header ─────────────────────────
           SliverToBoxAdapter(
             child: SafeArea(
@@ -228,8 +232,13 @@ class _ContactListScreenState extends ConsumerState<ContactListScreen> {
               ),
             ),
 
-          SliverToBoxAdapter(child: SizedBox(height: 80)),
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: Container(color: AppColors.black),
+          ),
+          SliverToBoxAdapter(child: SizedBox(height: bottomPad + 72)),
         ],
+        ),
       ),
     );
   }

@@ -154,10 +154,14 @@ class _CallHistoryScreenState extends ConsumerState<CallHistoryScreen> {
 
     final filtered = _calls.where((c) => _matchesFilter(c, uid)).toList();
 
+    final bottomPad = MediaQuery.of(context).padding.bottom;
+
     return Scaffold(
       backgroundColor: AppColors.black,
-      body: CustomScrollView(
-        slivers: [
+      body: Container(
+        color: AppColors.black,
+        child: CustomScrollView(
+          slivers: [
           // ─── Header ─────────────────────────
           SliverToBoxAdapter(
             child: SafeArea(
@@ -262,8 +266,13 @@ class _CallHistoryScreenState extends ConsumerState<CallHistoryScreen> {
               ),
             ),
 
-          SliverToBoxAdapter(child: SizedBox(height: 80)),
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: Container(color: AppColors.black),
+          ),
+          SliverToBoxAdapter(child: SizedBox(height: bottomPad + 72)),
         ],
+        ),
       ),
     );
   }

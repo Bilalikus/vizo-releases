@@ -16,10 +16,14 @@ class GroupListScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final uid = ref.read(authServiceProvider).effectiveUid;
 
+    final bottomPad = MediaQuery.of(context).padding.bottom;
+
     return Scaffold(
       backgroundColor: AppColors.black,
-      body: CustomScrollView(
-        slivers: [
+      body: Container(
+        color: AppColors.black,
+        child: CustomScrollView(
+          slivers: [
           // ─── Header ─────────────────────────
           SliverToBoxAdapter(
             child: SafeArea(
@@ -151,8 +155,13 @@ class GroupListScreen extends ConsumerWidget {
             },
           ),
 
-          SliverToBoxAdapter(child: SizedBox(height: 80)),
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: Container(color: AppColors.black),
+          ),
+          SliverToBoxAdapter(child: SizedBox(height: bottomPad + 72)),
         ],
+        ),
       ),
     );
   }

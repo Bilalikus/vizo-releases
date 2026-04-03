@@ -26,26 +26,28 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
 
     return Scaffold(
       backgroundColor: AppColors.black,
-      body: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseFirestore.instance
-            .collection('chats')
-            .where('participants', arrayContains: uid)
-            .orderBy('lastMessageAt', descending: true)
-            .snapshots(),
-        builder: (context, snapshot) {
-          final isLoading =
-              snapshot.connectionState == ConnectionState.waiting;
-          final docs = snapshot.data?.docs ?? [];
+      body: Container(
+        color: AppColors.black,
+        child: StreamBuilder<QuerySnapshot>(
+          stream: FirebaseFirestore.instance
+              .collection('chats')
+              .where('participants', arrayContains: uid)
+              .orderBy('lastMessageAt', descending: true)
+              .snapshots(),
+          builder: (context, snapshot) {
+            final isLoading =
+                snapshot.connectionState == ConnectionState.waiting;
+            final docs = snapshot.data?.docs ?? [];
 
-          // Filter archived chats out
-          final filtered = docs.where((doc) {
-            final data = doc.data() as Map<String, dynamic>;
-            final archived = List<String>.from(data['archivedBy'] ?? []);
-            return !archived.contains(uid);
-          }).toList();
+            // Filter archived chats out
+            final filtered = docs.where((doc) {
+              final data = doc.data() as Map<String, dynamic>;
+              final archived = List<String>.from(data['archivedBy'] ?? []);
+              return !archived.contains(uid);
+            }).toList();
 
-          return CustomScrollView(
-            slivers: [
+            return CustomScrollView(
+              slivers: [
               // ─── Top bar ─────────────────────
               SliverToBoxAdapter(
                 child: SafeArea(
@@ -199,6 +201,12 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                   ),
                 ),
 
+              // Fill remaining space with black so no grey shows
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: Container(color: AppColors.black),
+              ),
+
               // Bottom padding for floating nav bar
               SliverToBoxAdapter(
                 child: SizedBox(height: bottomPad + 72),
@@ -206,6 +214,7 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
             ],
           );
         },
+      ),
       ),
     );
   }
