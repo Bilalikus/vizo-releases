@@ -5,6 +5,16 @@ import '../../core/constants/constants.dart';
 
 /// Changelog entries per version.
 const Map<String, List<_ChangeEntry>> _changelog = {
+  '1.9.4': [
+    _ChangeEntry(Icons.visibility_off_rounded, 'Сообщества и каналы скрыты',
+        'Вкладки сообществ и каналов временно отключены для доработки.'),
+    _ChangeEntry(Icons.space_bar_rounded, 'Белое пространство убрано',
+        'Вкладка «Чаты» полностью переписана — никакого пустого места.'),
+    _ChangeEntry(Icons.bug_report_rounded, 'Исправления багов',
+        'Убраны deprecated-предупреждения, неиспользуемый код, лишние импорты.'),
+    _ChangeEntry(Icons.archive_rounded, 'Фильтр архивных',
+        'Архивные чаты теперь не показываются в основном списке.'),
+  ],
   '1.9.3': [
     _ChangeEntry(Icons.mic_rounded, 'Голосовые исправлены',
         'Запись и воспроизведение голосовых полностью переработаны — теперь стабильно.'),

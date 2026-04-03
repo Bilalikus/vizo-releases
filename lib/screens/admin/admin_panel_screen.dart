@@ -655,7 +655,7 @@ class _SystemTabState extends State<_SystemTab> {
             title: const Text('Режим обслуживания', style: TextStyle(color: AppColors.textPrimary)),
             subtitle: const Text('Блокирует доступ для всех пользователей', style: TextStyle(color: AppColors.textHint, fontSize: 12)),
             value: _maintenance,
-            activeColor: AppColors.accent,
+            activeTrackColor: AppColors.accent,
             onChanged: (v) async {
               await widget.admin.setMaintenanceMode(v);
               setState(() => _maintenance = v);

@@ -22,122 +22,116 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
   @override
   Widget build(BuildContext context) {
     final uid = ref.read(authServiceProvider).effectiveUid;
+    final bottomPad = MediaQuery.of(context).padding.bottom;
 
     return Scaffold(
       backgroundColor: AppColors.black,
-      body: CustomScrollView(
-        slivers: [
-          // ─── Compact top bar ─────────────────
-          SliverToBoxAdapter(
-            child: SafeArea(
-              bottom: false,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-                child: Row(
-                  children: [
-                    // Stories button
-                    GestureDetector(
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (_) => const StoriesScreen()),
-                      ),
-                      child: Container(
-                        padding: const EdgeInsets.all(7),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.06),
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(
-                            color: Colors.white.withValues(alpha: 0.08),
+      body: StreamBuilder<QuerySnapshot>(
+        stream: FirebaseFirestore.instance
+            .collection('chats')
+            .where('participants', arrayContains: uid)
+            .orderBy('lastMessageAt', descending: true)
+            .snapshots(),
+        builder: (context, snapshot) {
+          final isLoading =
+              snapshot.connectionState == ConnectionState.waiting;
+          final docs = snapshot.data?.docs ?? [];
+
+          // Filter archived chats out
+          final filtered = docs.where((doc) {
+            final data = doc.data() as Map<String, dynamic>;
+            final archived = List<String>.from(data['archivedBy'] ?? []);
+            return !archived.contains(uid);
+          }).toList();
+
+          return CustomScrollView(
+            slivers: [
+              // ─── Top bar ─────────────────────
+              SliverToBoxAdapter(
+                child: SafeArea(
+                  bottom: false,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                    child: Row(
+                      children: [
+                        _TopBarBtn(
+                          icon: Icons.auto_awesome_rounded,
+                          color: AppColors.accent,
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const StoriesScreen()),
                           ),
                         ),
-                        child: const Icon(Icons.auto_awesome_rounded,
-                            size: 16, color: AppColors.accent),
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    // Archive
-                    GestureDetector(
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (_) => const ArchivedChatsScreen()),
-                      ),
-                      child: Container(
-                        padding: const EdgeInsets.all(7),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.06),
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(
-                            color: Colors.white.withValues(alpha: 0.08),
+                        const SizedBox(width: 6),
+                        _TopBarBtn(
+                          icon: Icons.archive_outlined,
+                          color: AppColors.textHint,
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) =>
+                                    const ArchivedChatsScreen()),
                           ),
                         ),
-                        child: const Icon(Icons.archive_outlined,
-                            size: 16, color: AppColors.textHint),
-                      ),
-                    ),
-                    const Spacer(),
-                    // Unread toggle
-                    GestureDetector(
-                      onTap: () => setState(() => _onlyUnread = !_onlyUnread),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 200),
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: _onlyUnread
-                              ? AppColors.accent.withValues(alpha: 0.15)
-                              : Colors.white.withValues(alpha: 0.06),
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(
-                            color: _onlyUnread
-                                ? AppColors.accent.withValues(alpha: 0.3)
-                                : Colors.white.withValues(alpha: 0.08),
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              _onlyUnread
-                                  ? Icons.mark_email_unread_rounded
-                                  : Icons.filter_list_rounded,
-                              size: 14,
+                        const Spacer(),
+                        GestureDetector(
+                          onTap: () =>
+                              setState(() => _onlyUnread = !_onlyUnread),
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 5),
+                            decoration: BoxDecoration(
                               color: _onlyUnread
                                   ? AppColors.accent
-                                  : AppColors.textHint,
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              _onlyUnread ? 'Непрочит.' : 'Все',
-                              style: TextStyle(
-                                fontSize: 12,
+                                      .withValues(alpha: 0.15)
+                                  : Colors.white.withValues(alpha: 0.06),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
                                 color: _onlyUnread
                                     ? AppColors.accent
-                                    : AppColors.textHint,
-                                fontWeight: FontWeight.w500,
+                                        .withValues(alpha: 0.3)
+                                    : Colors.white
+                                        .withValues(alpha: 0.08),
                               ),
                             ),
-                          ],
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  _onlyUnread
+                                      ? Icons.mark_email_unread_rounded
+                                      : Icons.filter_list_rounded,
+                                  size: 14,
+                                  color: _onlyUnread
+                                      ? AppColors.accent
+                                      : AppColors.textHint,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  _onlyUnread ? 'Непрочит.' : 'Все',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: _onlyUnread
+                                        ? AppColors.accent
+                                        : AppColors.textHint,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
-                      ),
+                      ],
                     ),
-                  ],
+                  ),
                 ),
               ),
-            ),
-          ),
 
-          // ─── Chat list ──────────────────────
-          StreamBuilder<QuerySnapshot>(
-            stream: FirebaseFirestore.instance
-                .collection('chats')
-                .where('participants', arrayContains: uid)
-                .orderBy('lastMessageAt', descending: true)
-                .snapshots(),
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const SliverFillRemaining(
+              // ─── Loading ──────────────────────
+              if (isLoading)
+                const SliverFillRemaining(
                   hasScrollBody: false,
                   child: Center(
                     child: CircularProgressIndicator(
@@ -145,64 +139,104 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                       strokeWidth: 2,
                     ),
                   ),
-                );
-              }
+                ),
 
-              final docs = snapshot.data?.docs ?? [];
-
-              if (docs.isEmpty) {
-                return SliverFillRemaining(
+              // ─── Empty state ──────────────────
+              if (!isLoading && filtered.isEmpty)
+                SliverFillRemaining(
                   hasScrollBody: false,
                   child: Center(
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Icon(Icons.chat_bubble_outline_rounded,
-                            size: 56,
-                            color: AppColors.textHint.withValues(alpha: 0.4)),
-                        const SizedBox(height: AppSizes.md),
+                            size: 48,
+                            color: AppColors.textHint
+                                .withValues(alpha: 0.4)),
+                        const SizedBox(height: 12),
                         Text(
                           'Нет чатов',
                           style: TextStyle(
-                            color: AppColors.textHint.withValues(alpha: 0.6),
+                            color: AppColors.textHint
+                                .withValues(alpha: 0.6),
                             fontSize: 15,
                           ),
                         ),
                       ],
                     ),
                   ),
-                );
-              }
-
-              return SliverPadding(
-                padding: const EdgeInsets.symmetric(horizontal: AppSizes.md),
-                sliver: SliverList.builder(
-                  itemCount: docs.length,
-                  itemBuilder: (_, i) {
-                    final data = docs[i].data() as Map<String, dynamic>;
-                    final participants =
-                        List<String>.from(data['participants'] as List? ?? []);
-                    final peerId =
-                        participants.firstWhere((p) => p != uid, orElse: () => '');
-                    final lastMsg = data['lastMessage'] as String? ?? '';
-                    final lastAt = (data['lastMessageAt'] as Timestamp?)?.toDate();
-
-                    return _ChatTile(
-                      chatId: docs[i].id,
-                      peerId: peerId,
-                      lastMessage: lastMsg,
-                      lastTime: lastAt,
-                      currentUid: uid,
-                      onlyUnread: _onlyUnread,
-                    );
-                  },
                 ),
-              );
-            },
-          ),
 
-          SliverToBoxAdapter(child: SizedBox(height: 80)),
-        ],
+              // ─── Chat list ──────────────────
+              if (!isLoading && filtered.isNotEmpty)
+                SliverPadding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  sliver: SliverList.builder(
+                    itemCount: filtered.length,
+                    itemBuilder: (_, i) {
+                      final data = filtered[i].data()
+                          as Map<String, dynamic>;
+                      final participants = List<String>.from(
+                          data['participants'] as List? ?? []);
+                      final peerId = participants.firstWhere(
+                          (p) => p != uid,
+                          orElse: () => '');
+                      final lastMsg =
+                          data['lastMessage'] as String? ?? '';
+                      final lastAt =
+                          (data['lastMessageAt'] as Timestamp?)
+                              ?.toDate();
+
+                      return _ChatTile(
+                        chatId: filtered[i].id,
+                        peerId: peerId,
+                        lastMessage: lastMsg,
+                        lastTime: lastAt,
+                        currentUid: uid,
+                        onlyUnread: _onlyUnread,
+                      );
+                    },
+                  ),
+                ),
+
+              // Bottom padding for floating nav bar
+              SliverToBoxAdapter(
+                child: SizedBox(height: bottomPad + 72),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+// ─── Top Bar Button ──────────────────────────────────────
+
+class _TopBarBtn extends StatelessWidget {
+  const _TopBarBtn({
+    required this.icon,
+    required this.color,
+    required this.onTap,
+  });
+  final IconData icon;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(7),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.06),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.08),
+          ),
+        ),
+        child: Icon(icon, size: 16, color: color),
       ),
     );
   }
@@ -243,7 +277,6 @@ class _ChatTile extends StatelessWidget {
             peerId;
         final peerAvatar = peerData?['avatarBase64'] as String?;
 
-        // Count unread messages
         return StreamBuilder<QuerySnapshot>(
           stream: FirebaseFirestore.instance
               .collection('chats')
@@ -255,7 +288,6 @@ class _ChatTile extends StatelessWidget {
           builder: (context, unreadSnap) {
             final unreadCount = unreadSnap.data?.docs.length ?? 0;
 
-            // Filter: only unread
             if (onlyUnread && unreadCount == 0) {
               return const SizedBox.shrink();
             }
@@ -266,16 +298,15 @@ class _ChatTile extends StatelessWidget {
               background: Container(
                 alignment: Alignment.centerRight,
                 padding: const EdgeInsets.only(right: 24),
-                margin: const EdgeInsets.only(bottom: AppSizes.xs),
+                margin: const EdgeInsets.only(bottom: 4),
                 decoration: BoxDecoration(
                   color: AppColors.error.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(16),
                 ),
-                child: const Icon(Icons.archive_outlined,
+                child: const Icon(Icons.volume_off_rounded,
                     color: AppColors.error, size: 24),
               ),
               confirmDismiss: (_) async {
-                // Toggle mute as swipe action
                 final ref = FirebaseFirestore.instance
                     .collection('chats')
                     .doc(chatId);
@@ -298,164 +329,167 @@ class _ChatTile extends StatelessWidget {
                   }, SetOptions(merge: true));
                   if (context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Чат на беззвучном')),
+                      const SnackBar(
+                          content: Text('Чат на беззвучном')),
                     );
                   }
                 }
                 return false;
               },
               child: Padding(
-                padding: const EdgeInsets.only(bottom: AppSizes.xs),
+                padding: const EdgeInsets.only(bottom: 4),
                 child: VCard(
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => ChatScreen(
-                        peerId: peerId,
-                        peerName: peerName,
-                        peerAvatarUrl: peerAvatar,
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ChatScreen(
+                          peerId: peerId,
+                          peerName: peerName,
+                          peerAvatarUrl: peerAvatar,
+                        ),
                       ),
-                    ),
-                  );
-                },
-                child: Row(
-                  children: [
-                    // Avatar with online indicator
-                    Stack(
-                      children: [
-                        VAvatar(
-                          imageUrl: peerAvatar,
-                          name: peerName,
-                          radius: 24,
-                        ),
-                        Positioned(
-                          bottom: 0,
-                          right: 0,
-                          child: StreamBuilder<DocumentSnapshot>(
-                            stream: FirebaseFirestore.instance
-                                .collection('users')
-                                .doc(peerId)
-                                .snapshots(),
-                            builder: (_, presenceSnap) {
-                              final pData = presenceSnap.data?.data()
-                                  as Map<String, dynamic>?;
-                              final isOnline =
-                                  pData?['isOnline'] as bool? ?? false;
-                              if (!isOnline) {
-                                return const SizedBox.shrink();
-                              }
-                              return Container(
-                                width: 12,
-                                height: 12,
-                                decoration: BoxDecoration(
-                                  color: AppColors.success,
-                                  shape: BoxShape.circle,
-                                  border: Border.all(
-                                    color: AppColors.black,
-                                    width: 2,
-                                  ),
-                                ),
-                              );
-                            },
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(width: AppSizes.md),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                    );
+                  },
+                  child: Row(
+                    children: [
+                      Stack(
                         children: [
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  peerName,
-                                  style: const TextStyle(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w600,
-                                    color: AppColors.textPrimary,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              Text(
-                                timeStr,
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: AppColors.textHint
-                                      .withValues(alpha: 0.6),
-                                ),
-                              ),
-                            ],
+                          VAvatar(
+                            imageUrl: peerAvatar,
+                            name: peerName,
+                            radius: 24,
                           ),
-                          const SizedBox(height: 4),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  lastMessage,
-                                  style: TextStyle(
-                                    fontSize: 13,
-                                    color: AppColors.textSecondary
-                                        .withValues(alpha: 0.7),
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              // Muted icon
-                              StreamBuilder<DocumentSnapshot>(
-                                stream: FirebaseFirestore.instance
-                                    .collection('chats')
-                                    .doc(chatId)
-                                    .snapshots(),
-                                builder: (_, chatSnap) {
-                                  final chatData = chatSnap.data?.data()
-                                      as Map<String, dynamic>?;
-                                  final muted = List<String>.from(
-                                      chatData?['mutedBy'] ?? []);
-                                  if (muted.contains(currentUid)) {
-                                    return Padding(
-                                      padding: const EdgeInsets.only(right: 4),
-                                      child: Icon(Icons.volume_off_rounded,
-                                          size: 14,
-                                          color: AppColors.textHint
-                                              .withValues(alpha: 0.5)),
-                                    );
-                                  }
+                          Positioned(
+                            bottom: 0,
+                            right: 0,
+                            child: StreamBuilder<DocumentSnapshot>(
+                              stream: FirebaseFirestore.instance
+                                  .collection('users')
+                                  .doc(peerId)
+                                  .snapshots(),
+                              builder: (_, presenceSnap) {
+                                final pData = presenceSnap.data?.data()
+                                    as Map<String, dynamic>?;
+                                final isOnline =
+                                    pData?['isOnline'] as bool? ??
+                                        false;
+                                if (!isOnline) {
                                   return const SizedBox.shrink();
-                                },
-                              ),
-                              if (unreadCount > 0)
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 7, vertical: 3),
-                                  decoration: const BoxDecoration(
-                                    color: AppColors.accent,
+                                }
+                                return Container(
+                                  width: 12,
+                                  height: 12,
+                                  decoration: BoxDecoration(
+                                    color: AppColors.success,
                                     shape: BoxShape.circle,
-                                  ),
-                                  child: Text(
-                                    '$unreadCount',
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w600,
+                                    border: Border.all(
+                                      color: AppColors.black,
+                                      width: 2,
                                     ),
                                   ),
-                                ),
-                            ],
+                                );
+                              },
+                            ),
                           ),
                         ],
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    peerName,
+                                    style: const TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w600,
+                                      color: AppColors.textPrimary,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                StreamBuilder<DocumentSnapshot>(
+                                  stream: FirebaseFirestore.instance
+                                      .collection('chats')
+                                      .doc(chatId)
+                                      .snapshots(),
+                                  builder: (_, chatSnap) {
+                                    final chatData =
+                                        chatSnap.data?.data()
+                                            as Map<String, dynamic>?;
+                                    final muted = List<String>.from(
+                                        chatData?['mutedBy'] ?? []);
+                                    if (muted.contains(currentUid)) {
+                                      return Padding(
+                                        padding:
+                                            const EdgeInsets.only(right: 4),
+                                        child: Icon(
+                                            Icons.volume_off_rounded,
+                                            size: 14,
+                                            color: AppColors.textHint
+                                                .withValues(alpha: 0.5)),
+                                      );
+                                    }
+                                    return const SizedBox.shrink();
+                                  },
+                                ),
+                                Text(
+                                  timeStr,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: AppColors.textHint
+                                        .withValues(alpha: 0.6),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 3),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    lastMessage,
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      color: AppColors.textSecondary
+                                          .withValues(alpha: 0.7),
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                if (unreadCount > 0)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 7, vertical: 3),
+                                    decoration: const BoxDecoration(
+                                      color: AppColors.accent,
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: Text(
+                                      '$unreadCount',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ), // VCard
-            ), // Padding
-            ); // Dismissible
+              ),
+            );
           },
         );
       },

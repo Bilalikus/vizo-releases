@@ -76,6 +76,7 @@ class _MessageForwardScreenState extends ConsumerState<MessageForwardScreen> {
     }
   }
 
+  // ignore: unused_element
   Future<void> _forwardToGroup(String groupId, String groupName) async {
     if (_sending) return;
     setState(() => _sending = true);

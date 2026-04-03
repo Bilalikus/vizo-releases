@@ -228,8 +228,8 @@ class _MediaViewerScreenState extends State<MediaViewerScreen>
                           label: 'Увеличить',
                           onTap: () {
                             final current = _transformCtrl.value.clone();
-                            current.scale(1.5);
-                            _transformCtrl.value = current;
+                            final s = current.getMaxScaleOnAxis() * 1.5;
+                            _transformCtrl.value = Matrix4.identity()..setEntry(0, 0, s)..setEntry(1, 1, s);
                           },
                         ),
                         _BottomAction(

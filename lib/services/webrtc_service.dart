@@ -25,7 +25,6 @@ class WebRTCService {
   Timer? _qualityTimer;
 
   String? _currentCallId;
-  bool _isCaller = false;
   bool _isEnding = false;
   bool _isVideoCall = false;
   bool _isVideoEnabled = false;
@@ -321,7 +320,6 @@ class WebRTCService {
     String receiverAvatar = '',
     bool isVideoCall = false,
   }) async {
-    _isCaller = true;
     _isEnding = false;
     _isVideoCall = isVideoCall;
     _currentCallId = _uuid.v4();
@@ -438,7 +436,6 @@ class WebRTCService {
   // ─── Answer a Call (Receiver) ──────────────────────
 
   Future<void> answerCall(CallModel call) async {
-    _isCaller = false;
     _isEnding = false;
     _isVideoCall = call.isVideoCall;
     _currentCallId = call.id;
