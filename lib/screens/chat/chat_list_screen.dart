@@ -1,3 +1,4 @@
+import 'dart:ui';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,7 +9,7 @@ import 'chat_screen.dart';
 import 'archived_chats_screen.dart';
 import 'user_search_screen.dart';
 
-/// Telegram-style chat list — the main home screen.
+/// Telegram-style chat list with glass-morphism — main home screen.
 class ChatListScreen extends ConsumerStatefulWidget {
   const ChatListScreen({super.key});
 
@@ -19,6 +20,7 @@ class ChatListScreen extends ConsumerStatefulWidget {
 class _ChatListScreenState extends ConsumerState<ChatListScreen> {
   final _searchCtrl = TextEditingController();
   String _query = '';
+  bool _searchOpen = false;
 
   @override
   void dispose() {
@@ -46,11 +48,9 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                 snapshot.connectionState == ConnectionState.waiting;
             final docs = snapshot.data?.docs ?? [];
 
-            // Filter archived + search
             final filtered = docs.where((doc) {
               final data = doc.data() as Map<String, dynamic>;
-              final archived =
-                  List<String>.from(data['archivedBy'] ?? []);
+              final archived = List<String>.from(data['archivedBy'] ?? []);
               if (archived.contains(uid)) return false;
               if (_query.isNotEmpty) {
                 final lastMsg =
@@ -62,26 +62,33 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
 
             return CustomScrollView(
               slivers: [
-                // ─── Top bar ───────────────────
+                // ── Header: "Чаты" + icons ──
                 SliverToBoxAdapter(
                   child: SafeArea(
                     bottom: false,
                     child: Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                      padding: const EdgeInsets.fromLTRB(20, 14, 16, 0),
                       child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
                           const Text(
-                            'Vizo',
+                            'Чаты',
                             style: TextStyle(
-                              fontSize: 22,
+                              fontSize: 28,
                               fontWeight: FontWeight.w800,
                               color: AppColors.textPrimary,
-                              letterSpacing: -0.5,
+                              letterSpacing: -0.8,
                             ),
                           ),
                           const Spacer(),
-                          _HeaderBtn(
+                          _GlassIconBtn(
                             icon: Icons.search_rounded,
+                            onTap: () => setState(
+                                () => _searchOpen = !_searchOpen),
+                          ),
+                          const SizedBox(width: 8),
+                          _GlassIconBtn(
+                            icon: Icons.person_add_rounded,
                             onTap: () => Navigator.push(
                               context,
                               MaterialPageRoute(
@@ -90,7 +97,7 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                             ),
                           ),
                           const SizedBox(width: 8),
-                          _HeaderBtn(
+                          _GlassIconBtn(
                             icon: Icons.archive_outlined,
                             onTap: () => Navigator.push(
                               context,
@@ -105,54 +112,79 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                   ),
                 ),
 
-                // ─── Search bar ────────────────
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    child: Container(
-                      height: 36,
-                      decoration: BoxDecoration(
-                        color: AppColors.surface,
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: TextField(
-                        controller: _searchCtrl,
-                        onChanged: (v) => setState(() => _query = v),
-                        style: const TextStyle(
-                            color: AppColors.textPrimary, fontSize: 14),
-                        decoration: InputDecoration(
-                          hintText: 'Поиск...',
-                          hintStyle: TextStyle(
-                              color: AppColors.textHint.withValues(alpha: 0.6),
-                              fontSize: 14),
-                          prefixIcon: Icon(Icons.search_rounded,
-                              size: 18,
-                              color:
-                                  AppColors.textHint.withValues(alpha: 0.5)),
-                          border: InputBorder.none,
-                          contentPadding:
-                              const EdgeInsets.symmetric(vertical: 8),
-                          isDense: true,
+                // ── Search bar (glass, collapsible) ──
+                if (_searchOpen)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: BackdropFilter(
+                          filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                          child: Container(
+                            height: 40,
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.07),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.1),
+                                width: 0.5,
+                              ),
+                            ),
+                            child: TextField(
+                              controller: _searchCtrl,
+                              autofocus: true,
+                              onChanged: (v) =>
+                                  setState(() => _query = v),
+                              style: const TextStyle(
+                                  color: AppColors.textPrimary,
+                                  fontSize: 15),
+                              decoration: InputDecoration(
+                                hintText: 'Поиск чатов...',
+                                hintStyle: TextStyle(
+                                    color: AppColors.textHint
+                                        .withValues(alpha: 0.5),
+                                    fontSize: 15),
+                                prefixIcon: Icon(Icons.search_rounded,
+                                    size: 20,
+                                    color: AppColors.textHint
+                                        .withValues(alpha: 0.5)),
+                                suffixIcon: _query.isNotEmpty
+                                    ? GestureDetector(
+                                        onTap: () {
+                                          _searchCtrl.clear();
+                                          setState(() => _query = '');
+                                        },
+                                        child: Icon(
+                                            Icons.close_rounded,
+                                            size: 18,
+                                            color: AppColors.textHint
+                                                .withValues(alpha: 0.5)),
+                                      )
+                                    : null,
+                                border: InputBorder.none,
+                                contentPadding:
+                                    const EdgeInsets.symmetric(vertical: 10),
+                                isDense: true,
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
 
-                // ─── Loading ───────────────────
+                // ── Loading ──
                 if (isLoading)
                   const SliverFillRemaining(
                     hasScrollBody: false,
                     child: Center(
                       child: CircularProgressIndicator(
-                        color: AppColors.accent,
-                        strokeWidth: 2,
-                      ),
+                          color: AppColors.accent, strokeWidth: 2),
                     ),
                   ),
 
-                // ─── Empty state ───────────────
+                // ── Empty ──
                 if (!isLoading && filtered.isEmpty)
                   SliverFillRemaining(
                     hasScrollBody: false,
@@ -162,25 +194,36 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                         children: [
                           Icon(Icons.chat_bubble_outline_rounded,
                               size: 56,
-                              color:
-                                  AppColors.textHint.withValues(alpha: 0.3)),
-                          const SizedBox(height: 12),
+                              color: AppColors.textHint
+                                  .withValues(alpha: 0.25)),
+                          const SizedBox(height: 14),
                           Text(
                             _query.isNotEmpty
                                 ? 'Ничего не найдено'
                                 : 'Нет чатов',
                             style: TextStyle(
-                              color:
-                                  AppColors.textHint.withValues(alpha: 0.5),
-                              fontSize: 15,
+                              color: AppColors.textHint
+                                  .withValues(alpha: 0.5),
+                              fontSize: 16,
                             ),
                           ),
+                          if (_query.isEmpty) ...[
+                            const SizedBox(height: 6),
+                            Text(
+                              'Нажмите + чтобы начать',
+                              style: TextStyle(
+                                color: AppColors.textHint
+                                    .withValues(alpha: 0.3),
+                                fontSize: 13,
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                     ),
                   ),
 
-                // ─── Chat list (Telegram-style) ─
+                // ── Chat list ──
                 if (!isLoading && filtered.isNotEmpty)
                   SliverList.builder(
                     itemCount: filtered.length,
@@ -198,7 +241,7 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                           (data['lastMessageAt'] as Timestamp?)
                               ?.toDate();
 
-                      return _TelegramChatTile(
+                      return _GlassChatTile(
                         chatId: filtered[i].id,
                         peerId: peerId,
                         lastMessage: lastMsg,
@@ -208,15 +251,13 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                     },
                   ),
 
-                // Fill remaining
+                // Fill remaining with black
                 SliverFillRemaining(
                   hasScrollBody: false,
                   child: Container(color: AppColors.black),
                 ),
-
                 SliverToBoxAdapter(
-                  child: SizedBox(height: bottomPad + 72),
-                ),
+                    child: SizedBox(height: bottomPad + 72)),
               ],
             );
           },
@@ -226,10 +267,10 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
   }
 }
 
-// ─── Header Button ───────────────────────────────────────
+// ━━━ Glass Icon Button ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-class _HeaderBtn extends StatelessWidget {
-  const _HeaderBtn({required this.icon, required this.onTap});
+class _GlassIconBtn extends StatelessWidget {
+  const _GlassIconBtn({required this.icon, required this.onTap});
   final IconData icon;
   final VoidCallback onTap;
 
@@ -237,23 +278,33 @@ class _HeaderBtn extends StatelessWidget {
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: onTap,
-      child: Container(
-        width: 32,
-        height: 32,
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(10),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+          child: Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.07),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.1),
+                width: 0.5,
+              ),
+            ),
+            child: Icon(icon, size: 18, color: AppColors.textHint),
+          ),
         ),
-        child: Icon(icon, size: 18, color: AppColors.textHint),
       ),
     );
   }
 }
 
-// ─── Telegram-style Chat Tile ────────────────────────────
+// ━━━ Glass Chat Tile (Telegram-style) ━━━━━━━━━━━━━━━━━━━
 
-class _TelegramChatTile extends StatelessWidget {
-  const _TelegramChatTile({
+class _GlassChatTile extends StatelessWidget {
+  const _GlassChatTile({
     required this.chatId,
     required this.peerId,
     required this.lastMessage,
@@ -267,7 +318,7 @@ class _TelegramChatTile extends StatelessWidget {
   final DateTime? lastTime;
   final String currentUid;
 
-  String _formatTime(DateTime? t) {
+  String _fmt(DateTime? t) {
     if (t == null) return '';
     final now = DateTime.now();
     final diff = now.difference(t);
@@ -276,25 +327,25 @@ class _TelegramChatTile extends StatelessWidget {
     } else if (diff.inDays == 1) {
       return 'Вчера';
     } else if (diff.inDays < 7) {
-      const days = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
-      return days[t.weekday - 1];
-    } else {
-      return '${t.day}.${t.month.toString().padLeft(2, '0')}';
+      const d = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+      return d[t.weekday - 1];
     }
+    return '${t.day}.${t.month.toString().padLeft(2, '0')}';
   }
 
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<DocumentSnapshot>(
-      future:
-          FirebaseFirestore.instance.collection('users').doc(peerId).get(),
-      builder: (context, snapshot) {
-        final peerData =
-            snapshot.data?.data() as Map<String, dynamic>?;
-        final peerName = peerData?['displayName'] as String? ??
-            peerData?['phoneNumber'] as String? ??
+      future: FirebaseFirestore.instance
+          .collection('users')
+          .doc(peerId)
+          .get(),
+      builder: (context, snap) {
+        final pd = snap.data?.data() as Map<String, dynamic>?;
+        final name = pd?['displayName'] as String? ??
+            pd?['phoneNumber'] as String? ??
             peerId;
-        final peerAvatar = peerData?['avatarBase64'] as String?;
+        final avatar = pd?['avatarBase64'] as String?;
 
         return StreamBuilder<QuerySnapshot>(
           stream: FirebaseFirestore.instance
@@ -305,17 +356,17 @@ class _TelegramChatTile extends StatelessWidget {
               .where('isRead', isEqualTo: false)
               .snapshots(),
           builder: (context, unreadSnap) {
-            final unreadCount = unreadSnap.data?.docs.length ?? 0;
+            final uc = unreadSnap.data?.docs.length ?? 0;
 
             return Dismissible(
               key: ValueKey(chatId),
               direction: DismissDirection.endToStart,
               background: Container(
                 alignment: Alignment.centerRight,
-                padding: const EdgeInsets.only(right: 24),
-                color: AppColors.error.withValues(alpha: 0.15),
+                padding: const EdgeInsets.only(right: 28),
+                color: AppColors.error.withValues(alpha: 0.12),
                 child: const Icon(Icons.archive_rounded,
-                    color: AppColors.error, size: 24),
+                    color: AppColors.error, size: 22),
               ),
               confirmDismiss: (_) async {
                 await FirebaseFirestore.instance
@@ -331,139 +382,136 @@ class _TelegramChatTile extends StatelessWidget {
                 }
                 return false;
               },
-              child: Column(
-                children: [
-                  InkWell(
-                    onTap: () {
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => ChatScreen(
-                            peerId: peerId,
-                            peerName: peerName,
-                            peerAvatarUrl: peerAvatar,
-                          ),
-                        ),
-                      );
-                    },
-                    child: Padding(
+              child: InkWell(
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => ChatScreen(
+                      peerId: peerId,
+                      peerName: name,
+                      peerAvatarUrl: avatar,
+                    ),
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    Padding(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 10),
+                          horizontal: 16, vertical: 8),
                       child: Row(
                         children: [
-                          // Avatar + online dot
-                          Stack(
-                            children: [
-                              VAvatar(
-                                imageUrl: peerAvatar,
-                                name: peerName,
-                                radius: 26,
-                              ),
-                              Positioned(
-                                bottom: 0,
-                                right: 0,
-                                child: StreamBuilder<DocumentSnapshot>(
-                                  stream: FirebaseFirestore.instance
-                                      .collection('users')
-                                      .doc(peerId)
-                                      .snapshots(),
-                                  builder: (_, presSnap) {
-                                    final pData = presSnap.data?.data()
-                                        as Map<String, dynamic>?;
-                                    final online =
-                                        pData?['isOnline'] as bool? ??
-                                            false;
-                                    if (!online) {
-                                      return const SizedBox.shrink();
-                                    }
-                                    return Container(
-                                      width: 14,
-                                      height: 14,
-                                      decoration: BoxDecoration(
-                                        color: AppColors.success,
-                                        shape: BoxShape.circle,
-                                        border: Border.all(
-                                            color: AppColors.black,
-                                            width: 2.5),
-                                      ),
-                                    );
-                                  },
+                          // ── Avatar 52px + online dot ──
+                          SizedBox(
+                            width: 56,
+                            height: 56,
+                            child: Stack(
+                              children: [
+                                VAvatar(
+                                  imageUrl: avatar,
+                                  name: name,
+                                  radius: 26,
                                 ),
-                              ),
-                            ],
+                                Positioned(
+                                  bottom: 1,
+                                  right: 1,
+                                  child:
+                                      StreamBuilder<DocumentSnapshot>(
+                                    stream: FirebaseFirestore.instance
+                                        .collection('users')
+                                        .doc(peerId)
+                                        .snapshots(),
+                                    builder: (_, ps) {
+                                      final d = ps.data?.data()
+                                          as Map<String, dynamic>?;
+                                      final on =
+                                          d?['isOnline'] as bool? ??
+                                              false;
+                                      if (!on) {
+                                        return const SizedBox.shrink();
+                                      }
+                                      return Container(
+                                        width: 14,
+                                        height: 14,
+                                        decoration: BoxDecoration(
+                                          color: AppColors.success,
+                                          shape: BoxShape.circle,
+                                          border: Border.all(
+                                              color: AppColors.black,
+                                              width: 2.5),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                           const SizedBox(width: 12),
-                          // Name + message
+
+                          // ── Name + Message ──
                           Expanded(
                             child: Column(
                               crossAxisAlignment:
                                   CrossAxisAlignment.start,
                               children: [
+                                // Row 1: name, mute, time
                                 Row(
                                   children: [
                                     Expanded(
                                       child: Text(
-                                        peerName,
+                                        name,
                                         style: TextStyle(
                                           fontSize: 16,
-                                          fontWeight: unreadCount > 0
+                                          fontWeight: uc > 0
                                               ? FontWeight.w700
-                                              : FontWeight.w500,
+                                              : FontWeight.w600,
                                           color: AppColors.textPrimary,
                                         ),
                                         maxLines: 1,
-                                        overflow:
-                                            TextOverflow.ellipsis,
+                                        overflow: TextOverflow.ellipsis,
                                       ),
                                     ),
-                                    // Mute icon
+                                    // Mute
                                     StreamBuilder<DocumentSnapshot>(
                                       stream: FirebaseFirestore.instance
                                           .collection('chats')
                                           .doc(chatId)
                                           .snapshots(),
-                                      builder: (_, chatSnap) {
-                                        final cd =
-                                            chatSnap.data?.data()
-                                                as Map<String,
-                                                    dynamic>?;
-                                        final muted =
-                                            List<String>.from(
-                                                cd?['mutedBy'] ?? []);
-                                        if (muted
-                                            .contains(currentUid)) {
-                                          return Padding(
-                                            padding:
-                                                const EdgeInsets.only(
-                                                    right: 4),
-                                            child: Icon(
-                                              Icons
-                                                  .volume_off_rounded,
+                                      builder: (_, cs) {
+                                        final cd = cs.data?.data()
+                                            as Map<String, dynamic>?;
+                                        final m = List<String>.from(
+                                            cd?['mutedBy'] ?? []);
+                                        if (!m.contains(currentUid)) {
+                                          return const SizedBox.shrink();
+                                        }
+                                        return Padding(
+                                          padding:
+                                              const EdgeInsets.only(
+                                                  right: 4),
+                                          child: Icon(
+                                              Icons.volume_off_rounded,
                                               size: 14,
                                               color: AppColors.textHint
                                                   .withValues(
-                                                      alpha: 0.5),
-                                            ),
-                                          );
-                                        }
-                                        return const SizedBox
-                                            .shrink();
+                                                      alpha: 0.45)),
+                                        );
                                       },
                                     ),
                                     Text(
-                                      _formatTime(lastTime),
+                                      _fmt(lastTime),
                                       style: TextStyle(
-                                        fontSize: 12,
-                                        color: unreadCount > 0
+                                        fontSize: 13,
+                                        color: uc > 0
                                             ? AppColors.accent
                                             : AppColors.textHint
-                                                .withValues(
-                                                    alpha: 0.6),
+                                                .withValues(alpha: 0.55),
                                       ),
                                     ),
                                   ],
                                 ),
-                                const SizedBox(height: 4),
+                                const SizedBox(height: 5),
+                                // Row 2: message + badge
                                 Row(
                                   children: [
                                     Expanded(
@@ -471,41 +519,38 @@ class _TelegramChatTile extends StatelessWidget {
                                         lastMessage,
                                         style: TextStyle(
                                           fontSize: 14,
-                                          color: unreadCount > 0
-                                              ? AppColors
-                                                  .textSecondary
-                                              : AppColors
-                                                  .textSecondary
-                                                  .withValues(
-                                                      alpha: 0.6),
+                                          color: uc > 0
+                                              ? AppColors.textSecondary
+                                                  .withValues(alpha: 0.85)
+                                              : AppColors.textHint
+                                                  .withValues(alpha: 0.55),
                                         ),
                                         maxLines: 1,
-                                        overflow:
-                                            TextOverflow.ellipsis,
+                                        overflow: TextOverflow.ellipsis,
                                       ),
                                     ),
-                                    if (unreadCount > 0)
+                                    if (uc > 0)
                                       Container(
-                                        margin:
-                                            const EdgeInsets.only(
-                                                left: 8),
+                                        margin: const EdgeInsets.only(
+                                            left: 8),
+                                        constraints: const BoxConstraints(
+                                            minWidth: 22),
                                         padding: const EdgeInsets
                                             .symmetric(
-                                            horizontal: 7,
+                                            horizontal: 6,
                                             vertical: 3),
                                         decoration: BoxDecoration(
                                           color: AppColors.accent,
                                           borderRadius:
-                                              BorderRadius.circular(
-                                                  12),
+                                              BorderRadius.circular(11),
                                         ),
                                         child: Text(
-                                          '$unreadCount',
+                                          '$uc',
+                                          textAlign: TextAlign.center,
                                           style: const TextStyle(
                                             color: Colors.white,
-                                            fontSize: 11,
-                                            fontWeight:
-                                                FontWeight.w700,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
                                           ),
                                         ),
                                       ),
@@ -517,17 +562,16 @@ class _TelegramChatTile extends StatelessWidget {
                         ],
                       ),
                     ),
-                  ),
-                  // Telegram-style divider
-                  Padding(
-                    padding: const EdgeInsets.only(left: 72),
-                    child: Divider(
-                      height: 0.5,
-                      thickness: 0.5,
-                      color: AppColors.divider,
+                    // Telegram-style divider (starts after avatar)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 84),
+                      child: Container(
+                        height: 0.5,
+                        color: Colors.white.withValues(alpha: 0.06),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             );
           },

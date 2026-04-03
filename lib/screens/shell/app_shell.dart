@@ -17,7 +17,7 @@ import '../admin/admin_panel_screen.dart';
 import '../whats_new/whats_new_screen.dart';
 
 /// Current app version — increment when releasing updates.
-const String _appVersion = '1.9.5';
+const String _appVersion = '1.9.6';
 
 /// Main shell with bottom navigation — premium tab bar + update banner.
 class AppShell extends ConsumerStatefulWidget {

@@ -5,6 +5,16 @@ import '../../core/constants/constants.dart';
 
 /// Changelog entries per version.
 const Map<String, List<_ChangeEntry>> _changelog = {
+  '1.9.6': [
+    _ChangeEntry(Icons.blur_on_rounded, 'Glass UI',
+        'Полностью стеклянный интерфейс — glass-morphism на всех элементах.'),
+    _ChangeEntry(Icons.chat_rounded, 'Telegram-макет',
+        'Чат-лист переработан по образцу Telegram Desktop/Mobile.'),
+    _ChangeEntry(Icons.search_rounded, 'Умный поиск',
+        'Стеклянная панель поиска с плавной анимацией раскрытия.'),
+    _ChangeEntry(Icons.circle, 'Онлайн-статус',
+        'Зелёный индикатор онлайна на аватаре — как в Telegram.'),
+  ],
   '1.9.5': [
     _ChangeEntry(Icons.chat_rounded, 'Telegram-стиль',
         'Интерфейс чатов полностью переработан — как в Telegram/WhatsApp.'),
